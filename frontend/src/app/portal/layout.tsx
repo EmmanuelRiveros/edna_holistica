@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { User, LogOut, Home, Calendar, CalendarPlus, Menu, X } from "lucide-react";
+import { User, LogOut, Home, Calendar, CalendarPlus, Menu, X, Activity } from "lucide-react";
 
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -35,6 +35,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     { name: "Inicio", path: "/portal", icon: Home },
     { name: "Mis Reservas", path: "/portal/reservas", icon: Calendar },
     { name: "Agendar Cita", path: "/portal/agendar", icon: CalendarPlus },
+    { name: "Mi Expediente", path: "/portal/expediente", icon: Activity },
   ];
 
   if (!isAuthorized) {

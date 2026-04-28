@@ -78,19 +78,21 @@ export default function PortalDashboardPage() {
         </Link>
 
         {/* Card 3: Datos Médicos */}
-        <div className="bg-surface rounded-xl p-6 border border-border/50 shadow-sm h-full flex flex-col items-start gap-4 opacity-75 grayscale hover:grayscale-0 transition-all cursor-not-allowed">
-          <div className="p-3 rounded-xl bg-amber-600 text-white shadow-sm">
-            <Activity size={28} />
+        <Link href="/portal/expediente" className="group">
+          <div className="bg-surface rounded-xl p-6 border border-border/50 shadow-sm hover:shadow-md transition-all h-full flex flex-col items-start gap-4">
+            <div className="p-3 rounded-xl bg-amber-100 text-amber-600 group-hover:scale-110 transition-transform">
+              <Activity size={28} />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg text-text-primary mb-1 group-hover:text-amber-600 transition-colors">
+                Expediente Médico
+              </h3>
+              <p className="text-sm text-text-secondary">
+                Gestiona tu información de salud.
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="font-bold text-lg text-text-primary mb-1">
-              Expediente Médico
-            </h3>
-            <p className="text-sm text-text-secondary">
-              Próximamente podrás visualizar y editar tu perfil médico e historial.
-            </p>
-          </div>
-        </div>
+        </Link>
 
       </section>
 
