@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Loader2,
+  Search,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────
@@ -75,6 +76,18 @@ export default function PaymentsPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
+  // New Filters
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+
+  // Debounce search
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedSearch(searchQuery), 400);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
   // Fetch logic
   const fetchPayments = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -86,10 +99,14 @@ export default function PaymentsPage() {
     setIsLoading(true);
     setError(null);
 
-    let url = "/payments";
-    if (statusFilter) {
-      url += `?status=${encodeURIComponent(statusFilter)}`;
-    }
+    let url = "/payments?";
+    const params = new URLSearchParams();
+    if (statusFilter) params.append("status", statusFilter);
+    if (debouncedSearch) params.append("search", debouncedSearch);
+    if (startDate) params.append("startDate", startDate);
+    if (endDate) params.append("endDate", endDate);
+    
+    url += params.toString();
 
     try {
       const response = await fetchAPI(url, {
@@ -101,7 +118,7 @@ export default function PaymentsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [router, statusFilter]);
+  }, [router, statusFilter, debouncedSearch, startDate, endDate]);
 
   // Initial load and filter change
   useEffect(() => {
@@ -139,6 +156,46 @@ export default function PaymentsPage() {
     }
   };
 
+  // Action: Export CSV
+  const exportToCSV = () => {
+    if (payments.length === 0) return;
+
+    // 1. Defining headers
+    const headers = [
+      "Cliente",
+      "Concepto",
+      "Total",
+      "Método",
+      "Estado",
+      "Fecha"
+    ];
+
+    // 2. Mapping rows with exactly wrapped quotes
+    const rows = payments.map((item) => {
+      const cliente = `${item.client_first_name || ""} ${item.client_last_name || ""}`.trim();
+      const concepto = item.service_name || item.workshop_name || "Servicio / Taller";
+      const total = item.total_amount;
+      const metodo = paymentMethods[item.payment_method] || item.payment_method;
+      const estado = statusConfig[item.status]?.label || item.status;
+      const fecha = formatDate(item.scheduled_at);
+
+      return `"${cliente}","${concepto}","${total}","${metodo}","${estado}","${fecha}"`;
+    });
+
+    // 3. Join logic
+    const csvContent = [headers.join(","), ...rows].join("\n");
+
+    // 4. File trigger
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "pagos_edna_holistica.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -148,6 +205,50 @@ export default function PaymentsPage() {
             Administra los ingresos, abonos y estatus de cobros.
           </p>
         </div>
+      </div>
+
+      {/* ── Control Bar: Search, Dates, Export ── */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 flex-1">
+          {/* Search Input */}
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" size={16} />
+            <input
+              type="text"
+              placeholder="Buscar cliente o servicio..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-shadow"
+            />
+          </div>
+
+          {/* Date Filters */}
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="px-3 py-2 bg-surface text-text-secondary border border-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-shadow"
+            />
+            <span className="text-text-muted text-sm">-</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="px-3 py-2 bg-surface text-text-secondary border border-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-shadow"
+            />
+          </div>
+        </div>
+
+        {/* Export Button */}
+        <button
+          onClick={exportToCSV}
+          disabled={payments.length === 0}
+          className="flex items-center gap-2 px-4 py-2 bg-background border border-border text-text-primary rounded-lg text-sm font-medium hover:bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+        >
+          <Download size={16} />
+          Exportar CSV
+        </button>
       </div>
 
       {/* ── Filters ── */}

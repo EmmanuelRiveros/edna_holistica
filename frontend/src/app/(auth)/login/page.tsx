@@ -28,7 +28,12 @@ export default function LoginPage() {
       localStorage.setItem("token", token);
       localStorage.setItem("user", JSON.stringify(user));
 
-      router.push("/");
+      const role = response.data.user.role;
+      if (role === 'client') {
+        router.push('/portal');
+      } else {
+        router.push('/');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al iniciar sesión");
     } finally {

@@ -210,7 +210,7 @@ const getAll = async (req, res) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.max(parseInt(req.query.limit, 10) || 20, 1);
     const offset = (page - 1) * limit;
-    const { status } = req.query;
+    const { status, search, startDate, endDate } = req.query;
 
     const conditions = ['p.deleted_at IS NULL'];
     const values = [];
@@ -222,11 +222,37 @@ const getAll = async (req, res) => {
       paramIndex++;
     }
 
+    if (search) {
+      conditions.push(`((u.first_name || ' ' || u.last_name) ILIKE $${paramIndex} OR s.name ILIKE $${paramIndex} OR w.name ILIKE $${paramIndex})`);
+      values.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    if (startDate) {
+      conditions.push(`p.created_at >= $${paramIndex}`);
+      values.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      conditions.push(`p.created_at <= ($${paramIndex}::DATE + INTERVAL '1 day - 1 second')`);
+      values.push(endDate);
+      paramIndex++;
+    }
+
     const whereClause = conditions.join(' AND ');
+    
+    const baseJoins = `
+       FROM payments p
+       LEFT JOIN reservations r ON r.id = p.reservation_id
+       LEFT JOIN users u ON u.id = r.client_id
+       LEFT JOIN services s ON s.id = r.service_id
+       LEFT JOIN workshops w ON w.id = r.workshop_id
+    `;
 
     // Total
     const countResult = await pool.query(
-      `SELECT COUNT(*) FROM payments p WHERE ${whereClause}`,
+      `SELECT COUNT(*) ${baseJoins} WHERE ${whereClause}`,
       values
     );
     const total = parseInt(countResult.rows[0].count, 10);
@@ -240,11 +266,7 @@ const getAll = async (req, res) => {
               u.first_name AS client_first_name, u.last_name AS client_last_name, u.email AS client_email,
               s.name AS service_name,
               w.name AS workshop_name
-       FROM payments p
-       LEFT JOIN reservations r ON r.id = p.reservation_id
-       LEFT JOIN users u ON u.id = r.client_id
-       LEFT JOIN services s ON s.id = r.service_id
-       LEFT JOIN workshops w ON w.id = r.workshop_id
+       ${baseJoins}
        WHERE ${whereClause}
        ORDER BY p.created_at DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,

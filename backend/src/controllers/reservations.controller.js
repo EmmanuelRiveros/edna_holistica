@@ -30,7 +30,14 @@ const getAll = async (req, res) => {
       paramIndex++;
     }
 
-    if (client_id) {
+    // Si el usuario es cliente, forzar que solo vea sus propias reservas
+    if (req.user.role === 'client') {
+      // Ignorar cualquier client_id que venga en el query
+      // y forzar el filtro con su propio ID
+      conditions.push(`r.client_id = $${paramIndex}`);
+      values.push(req.user.id);
+      paramIndex++;
+    } else if (client_id) {
       conditions.push(`r.client_id = $${paramIndex}`);
       values.push(client_id);
       paramIndex++;
@@ -253,6 +260,25 @@ const updateStatus = async (req, res) => {
       return res.status(400).json({
         error: `El status debe ser uno de: ${allowedStatuses.join(', ')}`,
       });
+    }
+
+    // Validación de política de cancelación (24 horas) exclusiva para clientes
+    if (req.user.role === 'client' && status === 'cancelled') {
+      const currentRes = await pool.query(
+        'SELECT scheduled_at FROM reservations WHERE id = $1',
+        [id]
+      );
+      
+      if (currentRes.rows.length > 0) {
+        const scheduledAt = currentRes.rows[0].scheduled_at;
+        const hoursUntilAppointment = (new Date(scheduledAt) - new Date()) / (1000 * 60 * 60);
+
+        if (hoursUntilAppointment < 24) {
+          return res.status(400).json({
+            error: 'No puedes cancelar una cita con menos de 24 horas de anticipación. Contacta directamente con el centro.',
+          });
+        }
+      }
     }
 
     const result = await pool.query(

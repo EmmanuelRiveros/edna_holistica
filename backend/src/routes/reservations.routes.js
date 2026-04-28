@@ -16,10 +16,10 @@ const reservationsController = require('../controllers/reservations.controller')
 
 const router = Router();
 
-router.get('/', verifyToken, authorizeRoles('admin', 'therapist'), reservationsController.getAll);
+router.get('/', verifyToken, authorizeRoles('admin', 'therapist', 'client'), reservationsController.getAll);
 router.get('/:id', verifyToken, reservationsController.getById);
 router.post('/', verifyToken, authorizeRoles('admin', 'client'), reservationsController.create);
-router.patch('/:id/status', verifyToken, authorizeRoles('admin', 'therapist'), reservationsController.updateStatus);
+router.patch('/:id/status', verifyToken, authorizeRoles('admin', 'therapist', 'client'), reservationsController.updateStatus);
 router.patch('/:id/notes', verifyToken, authorizeRoles('admin', 'therapist'), reservationsController.addNotes);
 router.patch('/:id/reschedule', verifyToken, authorizeRoles('admin', 'therapist'), reservationsController.reschedule);
 router.delete('/:id', verifyToken, authorizeRoles('admin'), reservationsController.remove);
