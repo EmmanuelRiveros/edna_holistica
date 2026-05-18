@@ -90,8 +90,16 @@ function PortalLayoutInner({ children }: { children: React.ReactNode }) {
               })}
             </nav>
 
-            {/* Cart + Logout */}
+            {/* Cart + Profile + Logout */}
             <div className="hidden md:flex items-center gap-2">
+              <Link
+                href="/portal/perfil"
+                className="flex items-center gap-2 text-sm font-medium text-text-secondary hover:text-primary transition-colors p-2 rounded-md hover:bg-background"
+                title="Ajustes de Perfil"
+              >
+                <User size={18} />
+                <span className="hidden lg:inline">Mi Perfil</span>
+              </Link>
               <Link
                 href="/portal/tienda/carrito"
                 className="relative flex items-center gap-1 text-sm font-medium text-text-secondary hover:text-primary transition-colors p-2 rounded-md hover:bg-background"
@@ -150,9 +158,19 @@ function PortalLayoutInner({ children }: { children: React.ReactNode }) {
                   </Link>
                 );
               })}
+              <Link
+                href="/portal/perfil"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="block px-3 py-2 rounded-md text-base font-medium text-text-secondary hover:bg-background hover:text-text-primary transition-colors mt-2 border-t border-border pt-4"
+              >
+                <div className="flex items-center gap-3">
+                  <User size={18} />
+                  Mi Perfil
+                </div>
+              </Link>
               <button
                 onClick={handleLogout}
-                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-md text-base font-medium text-danger hover:bg-danger-light transition-colors mt-4"
+                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-md text-base font-medium text-danger hover:bg-danger-light transition-colors mt-2"
               >
                 <LogOut size={18} />
                 Cerrar Sesión

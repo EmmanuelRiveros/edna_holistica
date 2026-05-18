@@ -377,7 +377,7 @@ function EventModal({
   const [cancelReason, setCancelReason] = useState("");
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
-  const [completeNotes, setCompleteNotes] = useState(r?.notes || "");
+  const [completeNotes, setCompleteNotes] = useState((r as any)?.notes || "");
   const isWorkshopEvent = event.type === "workshop";
   const hasClient = Boolean(r?.client_first_name && r?.client_last_name);
   const badge = statusConfig[event.status] || {
@@ -492,150 +492,150 @@ function EventModal({
           </div>
         ) : (
           <>
-        {/* Header */}
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <h2 className="text-lg font-bold text-text-primary">
-              {isWorkshopEvent ? "Detalle de Taller" : "Detalle de Reserva"}
-            </h2>
-            <span
-              className={`inline-block mt-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${badge.bg} ${badge.cls}`}
-            >
-              {badge.label}
-            </span>
-          </div>
-          <button
-            onClick={onClose}
-            disabled={isUpdating}
-            className="rounded-lg p-1.5 text-text-muted hover:bg-background hover:text-text-primary
+            {/* Header */}
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <h2 className="text-lg font-bold text-text-primary">
+                  {isWorkshopEvent ? "Detalle de Taller" : "Detalle de Reserva"}
+                </h2>
+                <span
+                  className={`inline-block mt-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${badge.bg} ${badge.cls}`}
+                >
+                  {badge.label}
+                </span>
+              </div>
+              <button
+                onClick={onClose}
+                disabled={isUpdating}
+                className="rounded-lg p-1.5 text-text-muted hover:bg-background hover:text-text-primary
                        transition-colors disabled:opacity-50"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Info rows */}
-        <div className="space-y-3 text-sm">
-          {/* Cliente — only when client data exists */}
-          {hasClient && (
-            <InfoRow
-              icon={<User size={16} className="text-primary" />}
-              label="Cliente"
-              value={`${r.client_first_name} ${r.client_last_name}`}
-            />
-          )}
-
-          {/* Servicio / Taller */}
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 shrink-0">
-              {event.type === "service" ? (
-                <Sparkles size={16} className="text-blue-500" />
-              ) : (
-                <CalendarDays size={16} className="text-orange-500" />
-              )}
+              >
+                <X size={18} />
+              </button>
             </div>
-            <div>
-              <p className="text-text-muted text-xs">
-                {event.type === "service" ? "Servicio" : "Taller"}
-              </p>
-              <p className="text-text-primary font-medium">{entityName}</p>
-              {isWorkshopEvent && r.max_capacity && (
-                <p className="text-text-secondary text-xs mt-0.5">
-                  <Users size={12} className="inline mr-1" />
-                  Capacidad: {r.max_capacity} personas
-                </p>
+
+            {/* Info rows */}
+            <div className="space-y-3 text-sm">
+              {/* Cliente — only when client data exists */}
+              {hasClient && (
+                <InfoRow
+                  icon={<User size={16} className="text-primary" />}
+                  label="Cliente"
+                  value={`${r.client_first_name} ${r.client_last_name}`}
+                />
               )}
-              {isWorkshopEvent && (
-                <p className="text-text-muted text-xs mt-1 italic">
-                  * Aún no hay clientes inscritos.
-                </p>
+
+              {/* Servicio / Taller */}
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 shrink-0">
+                  {event.type === "service" ? (
+                    <Sparkles size={16} className="text-blue-500" />
+                  ) : (
+                    <CalendarDays size={16} className="text-orange-500" />
+                  )}
+                </div>
+                <div>
+                  <p className="text-text-muted text-xs">
+                    {event.type === "service" ? "Servicio" : "Taller"}
+                  </p>
+                  <p className="text-text-primary font-medium">{entityName}</p>
+                  {isWorkshopEvent && r.max_capacity && (
+                    <p className="text-text-secondary text-xs mt-0.5">
+                      <Users size={12} className="inline mr-1" />
+                      Capacidad: {r.max_capacity} personas
+                    </p>
+                  )}
+                  {isWorkshopEvent && (
+                    <p className="text-text-muted text-xs mt-1 italic">
+                      * Aún no hay clientes inscritos.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Terapeuta — only for reservations */}
+              {!isWorkshopEvent && r.therapist_first_name && (
+                <InfoRow
+                  icon={<Stethoscope size={16} className="text-emerald-500" />}
+                  label="Terapeuta"
+                  value={`${r.therapist_first_name} ${r.therapist_last_name}`}
+                />
               )}
+
+              <InfoRow
+                icon={<CalendarDays size={16} className="text-text-muted" />}
+                label="Fecha"
+                value={formattedDate}
+              />
+              <InfoRow
+                icon={<Clock size={16} className="text-text-muted" />}
+                label="Horario"
+                value={formattedTime}
+              />
             </div>
-          </div>
 
-          {/* Terapeuta — only for reservations */}
-          {!isWorkshopEvent && r.therapist_first_name && (
-            <InfoRow
-              icon={<Stethoscope size={16} className="text-emerald-500" />}
-              label="Terapeuta"
-              value={`${r.therapist_first_name} ${r.therapist_last_name}`}
-            />
-          )}
-
-          <InfoRow
-            icon={<CalendarDays size={16} className="text-text-muted" />}
-            label="Fecha"
-            value={formattedDate}
-          />
-          <InfoRow
-            icon={<Clock size={16} className="text-text-muted" />}
-            label="Horario"
-            value={formattedTime}
-          />
-        </div>
-
-        {/* Action Buttons — only for reservations */}
-        {showActions && (
-          <div className="mt-6 pt-4 border-t border-border">
-            {event.status === "pending" && (
-              <div className="flex gap-2">
-                <button
-                  disabled={isUpdating}
-                  onClick={() => onStatusChange(event.id, "confirmed")}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-green-500 px-3 py-2.5
+            {/* Action Buttons — only for reservations */}
+            {showActions && (
+              <div className="mt-6 pt-4 border-t border-border">
+                {event.status === "pending" && (
+                  <div className="flex gap-2">
+                    <button
+                      disabled={isUpdating}
+                      onClick={() => onStatusChange(event.id, "confirmed")}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-green-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-green-600 transition-colors disabled:opacity-60"
-                >
-                  <CheckCircle2 size={16} />
-                  Confirmar
-                </button>
-                <button
-                  disabled={isUpdating}
-                  onClick={() => setShowCancelModal(true)}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
+                    >
+                      <CheckCircle2 size={16} />
+                      Confirmar
+                    </button>
+                    <button
+                      disabled={isUpdating}
+                      onClick={() => setShowCancelModal(true)}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-red-600 transition-colors disabled:opacity-60"
-                >
-                  <XCircle size={16} />
-                  Cancelar
-                </button>
-              </div>
-            )}
+                    >
+                      <XCircle size={16} />
+                      Cancelar
+                    </button>
+                  </div>
+                )}
 
-            {event.status === "confirmed" && (
-              <div className="flex gap-2">
-                <button
-                  disabled={isUpdating}
-                  onClick={() => setShowCompleteModal(true)}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-gray-600 px-3 py-2.5
+                {event.status === "confirmed" && (
+                  <div className="flex gap-2">
+                    <button
+                      disabled={isUpdating}
+                      onClick={() => setShowCompleteModal(true)}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-gray-600 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-gray-700 transition-colors disabled:opacity-60"
-                >
-                  <CheckCircle2 size={16} />
-                  Completada
-                </button>
-                <button
-                  disabled={isUpdating}
-                  onClick={() => onStatusChange(event.id, "no_show")}
-                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-3 py-2.5
+                    >
+                      <CheckCircle2 size={16} />
+                      Completada
+                    </button>
+                    <button
+                      disabled={isUpdating}
+                      onClick={() => onStatusChange(event.id, "no_show")}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-orange-600 transition-colors disabled:opacity-60"
-                >
-                  <AlertTriangle size={16} />
-                  No asistió
-                </button>
-                <button
-                  disabled={isUpdating}
-                  onClick={() => setShowCancelModal(true)}
-                  className="flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
+                    >
+                      <AlertTriangle size={16} />
+                      No asistió
+                    </button>
+                    <button
+                      disabled={isUpdating}
+                      onClick={() => setShowCancelModal(true)}
+                      className="flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-red-600 transition-colors disabled:opacity-60"
-                >
-                  <XCircle size={16} />
-                </button>
+                    >
+                      <XCircle size={16} />
+                    </button>
+                  </div>
+                )}
+
+                {isUpdating && (
+                  <p className="text-center text-xs text-text-muted mt-2">Actualizando...</p>
+                )}
               </div>
             )}
-
-            {isUpdating && (
-              <p className="text-center text-xs text-text-muted mt-2">Actualizando...</p>
-            )}
-          </div>
-        )}
           </>
         )}
       </div>
