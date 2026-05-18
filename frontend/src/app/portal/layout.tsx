@@ -3,9 +3,18 @@
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { User, LogOut, Home, Calendar, CalendarPlus, Menu, X, Activity } from "lucide-react";
+import { User, LogOut, Home, Calendar, CalendarPlus, Menu, X, Activity, ShoppingBag, Package, ShoppingCart } from "lucide-react";
+import { CartProvider, useCart } from "@/context/CartContext";
 
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <CartProvider>
+      <PortalLayoutInner>{children}</PortalLayoutInner>
+    </CartProvider>
+  );
+}
+
+function PortalLayoutInner({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -31,15 +40,19 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     router.push("/login");
   };
 
+  const { itemCount } = useCart();
+
   const navLinks = [
     { name: "Inicio", path: "/portal", icon: Home },
     { name: "Mis Reservas", path: "/portal/reservas", icon: Calendar },
     { name: "Agendar Cita", path: "/portal/agendar", icon: CalendarPlus },
     { name: "Mi Expediente", path: "/portal/expediente", icon: Activity },
+    { name: "Tienda", path: "/portal/tienda", icon: ShoppingBag },
+    { name: "Mis Órdenes", path: "/portal/mis-ordenes", icon: Package },
   ];
 
   if (!isAuthorized) {
-    return null; // Prevents flashing content while redirecting
+    return null;
   }
 
   return (
@@ -65,11 +78,10 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
                     key={link.path}
                     href={link.path}
                     className={`inline-flex items-center gap-1.5 px-1 pt-1 text-sm font-medium transition-colors border-b-2
-                                ${
-                                  isActive
-                                    ? "border-primary text-primary"
-                                    : "border-transparent text-text-secondary hover:text-text-primary hover:border-border"
-                                }`}
+                                ${isActive
+                        ? "border-primary text-primary"
+                        : "border-transparent text-text-secondary hover:text-text-primary hover:border-border"
+                      }`}
                   >
                     <Icon size={16} />
                     {link.name}
@@ -78,8 +90,19 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
               })}
             </nav>
 
-            {/* Desktop Logout Button */}
-            <div className="hidden md:flex items-center">
+            {/* Cart + Logout */}
+            <div className="hidden md:flex items-center gap-2">
+              <Link
+                href="/portal/tienda/carrito"
+                className="relative flex items-center gap-1 text-sm font-medium text-text-secondary hover:text-primary transition-colors p-2 rounded-md hover:bg-background"
+              >
+                <ShoppingCart size={18} />
+                {itemCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">
+                    {itemCount}
+                  </span>
+                )}
+              </Link>
               <button
                 onClick={handleLogout}
                 className="flex items-center gap-2 text-sm font-medium text-text-secondary hover:text-danger transition-colors p-2 rounded-md hover:bg-danger-light"
@@ -115,11 +138,10 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
                     href={link.path}
                     onClick={() => setIsMobileMenuOpen(false)}
                     className={`block px-3 py-2 rounded-md text-base font-medium transition-colors
-                                ${
-                                  isActive
-                                    ? "bg-primary/10 text-primary"
-                                    : "text-text-secondary hover:bg-background hover:text-text-primary"
-                                }`}
+                                ${isActive
+                        ? "bg-primary/10 text-primary"
+                        : "text-text-secondary hover:bg-background hover:text-text-primary"
+                      }`}
                   >
                     <div className="flex items-center gap-3">
                       <Icon size={18} />

@@ -18,6 +18,7 @@ const router = Router();
 // Rutas públicas (cualquier visitante puede consultar servicios)
 // -----------------------------------------------------------
 router.get('/', servicesController.getAll);
+router.get('/:id/therapists', verifyToken, servicesController.getTherapists);
 router.get('/:id', servicesController.getById);
 
 // -----------------------------------------------------------

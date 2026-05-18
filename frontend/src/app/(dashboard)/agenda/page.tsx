@@ -237,16 +237,22 @@ export default function AgendaPage() {
 
   // ── Status change ─────────────────────────────────────────
   const handleStatusChange = useCallback(
-    async (id: string, newStatus: string) => {
+    async (id: string, newStatus: string, reasonOrNotes?: string) => {
       const headers = getAuthHeaders();
       if (!headers) return;
 
       setIsUpdating(true);
       try {
+        const payload: any = { status: newStatus };
+        if (reasonOrNotes) {
+          if (newStatus === "cancelled") payload.cancellation_reason = reasonOrNotes;
+          else if (newStatus === "completed") payload.notes = reasonOrNotes;
+        }
+
         await fetchAPI(`/reservations/${id}/status`, {
           method: "PATCH",
           headers,
-          body: JSON.stringify({ status: newStatus }),
+          body: JSON.stringify(payload),
         });
         setSelectedEvent(null);
         await fetchData();
@@ -363,9 +369,15 @@ function EventModal({
   event: CalendarEvent;
   isUpdating: boolean;
   onClose: () => void;
-  onStatusChange: (id: string, status: string) => void;
+  onStatusChange: (id: string, status: string, reason?: string) => void;
 }) {
   const r = event.resource;
+
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [completeNotes, setCompleteNotes] = useState(r?.notes || "");
   const isWorkshopEvent = event.type === "workshop";
   const hasClient = Boolean(r?.client_first_name && r?.client_last_name);
   const badge = statusConfig[event.status] || {
@@ -392,6 +404,94 @@ function EventModal({
         className="bg-surface rounded-xl p-6 w-full max-w-md shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
+        {showCompleteModal ? (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between mb-2">
+              <h2 className="text-lg font-bold text-text-primary">
+                Completar Sesión
+              </h2>
+              <button
+                onClick={() => setShowCompleteModal(false)}
+                disabled={isUpdating}
+                className="rounded-lg p-1.5 text-text-muted hover:bg-background hover:text-text-primary transition-colors disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-1">
+                Notas de la sesión (Opcional)
+              </label>
+              <textarea
+                value={completeNotes}
+                onChange={(e) => setCompleteNotes(e.target.value)}
+                rows={4}
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                placeholder="Escribe observaciones, evolución o detalles de la sesión..."
+              />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                disabled={isUpdating}
+                onClick={() => setShowCompleteModal(false)}
+                className="flex-1 rounded-lg bg-gray-100 px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-200 transition-colors disabled:opacity-60"
+              >
+                Volver
+              </button>
+              <button
+                disabled={isUpdating}
+                onClick={() => onStatusChange(event.id, "completed", completeNotes)}
+                className="flex-1 rounded-lg bg-green-500 px-3 py-2.5 text-sm font-medium text-white hover:bg-green-600 transition-colors disabled:opacity-60"
+              >
+                {isUpdating ? "Guardando..." : "Guardar y Completar"}
+              </button>
+            </div>
+          </div>
+        ) : showCancelModal ? (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between mb-2">
+              <h2 className="text-lg font-bold text-text-primary">
+                ¿Seguro que deseas cancelar esta cita?
+              </h2>
+              <button
+                onClick={() => setShowCancelModal(false)}
+                disabled={isUpdating}
+                className="rounded-lg p-1.5 text-text-muted hover:bg-background hover:text-text-primary transition-colors disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-1">
+                Motivo de la cancelación (El cliente recibirá este mensaje)
+              </label>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                rows={3}
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                placeholder="Opcional..."
+              />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                disabled={isUpdating}
+                onClick={() => setShowCancelModal(false)}
+                className="flex-1 rounded-lg bg-gray-100 px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-200 transition-colors disabled:opacity-60"
+              >
+                Volver
+              </button>
+              <button
+                disabled={isUpdating}
+                onClick={() => onStatusChange(event.id, "cancelled", cancelReason)}
+                className="flex-1 rounded-lg bg-red-500 px-3 py-2.5 text-sm font-medium text-white hover:bg-red-600 transition-colors disabled:opacity-60"
+              >
+                {isUpdating ? "Cancelando..." : "Confirmar Cancelación"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Header */}
         <div className="flex items-start justify-between mb-5">
           <div>
@@ -490,7 +590,7 @@ function EventModal({
                 </button>
                 <button
                   disabled={isUpdating}
-                  onClick={() => onStatusChange(event.id, "cancelled")}
+                  onClick={() => setShowCancelModal(true)}
                   className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-red-600 transition-colors disabled:opacity-60"
                 >
@@ -504,7 +604,7 @@ function EventModal({
               <div className="flex gap-2">
                 <button
                   disabled={isUpdating}
-                  onClick={() => onStatusChange(event.id, "completed")}
+                  onClick={() => setShowCompleteModal(true)}
                   className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-gray-600 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-gray-700 transition-colors disabled:opacity-60"
                 >
@@ -522,7 +622,7 @@ function EventModal({
                 </button>
                 <button
                   disabled={isUpdating}
-                  onClick={() => onStatusChange(event.id, "cancelled")}
+                  onClick={() => setShowCancelModal(true)}
                   className="flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-3 py-2.5
                              text-sm font-medium text-white hover:bg-red-600 transition-colors disabled:opacity-60"
                 >
@@ -535,6 +635,8 @@ function EventModal({
               <p className="text-center text-xs text-text-muted mt-2">Actualizando...</p>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

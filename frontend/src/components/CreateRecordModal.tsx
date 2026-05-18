@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { fetchAPI } from "@/lib/api";
 
 // ── Initial state constants (numbers as empty strings to avoid "0900" bug) ──
-const initialService = { name: "", description: "", duration_minutes: "", price: "" };
-const initialWorkshop = { name: "", type: "presencial", starts_at: "", ends_at: "", max_capacity: "", price: "" };
+const initialService = { name: "", description: "", duration_minutes: "", buffer_minutes: 15, price: "", deposit_amount: "" };
+const initialWorkshop = { name: "", type: "presencial", starts_at: "", ends_at: "", max_capacity: "", price: "", deposit_amount: "" };
 
 // ── Types ───────────────────────────────────────────────────
 interface CreateRecordModalProps {
@@ -82,9 +82,11 @@ export default function CreateRecordModal({
       // Build payload with correct types for the backend
       const payload: Record<string, any> = { ...formData };
       payload.price = Number(formData.price);
+      payload.deposit_amount = formData.deposit_amount === "" ? 0 : Number(formData.deposit_amount);
 
       if (type === "services") {
         payload.duration_minutes = Number(formData.duration_minutes);
+        payload.buffer_minutes = Number(formData.buffer_minutes ?? 15);
       } else if (type === "workshops") {
         payload.max_capacity = Number(formData.max_capacity);
         payload.starts_at = new Date(formData.starts_at).toISOString();
@@ -180,6 +182,21 @@ export default function CreateRecordModal({
             />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-1">
+              Anticipo (MXN)
+            </label>
+            <input
+              type="number"
+              name="deposit_amount"
+              value={formData.deposit_amount ?? ""}
+              onChange={handleChange}
+              min="0"
+              className={inputCls}
+              placeholder="0 = sin anticipo requerido"
+            />
+          </div>
+
           {/* ── Service-specific fields ── */}
           {type === "services" && (
             <>
@@ -209,6 +226,21 @@ export default function CreateRecordModal({
                   min="0"
                   className={inputCls}
                   placeholder="60"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-1">
+                  Tiempo de descanso después de la cita (minutos)
+                </label>
+                <input
+                  type="number"
+                  name="buffer_minutes"
+                  value={formData.buffer_minutes ?? 15}
+                  onChange={handleChange}
+                  min="0"
+                  className={inputCls}
+                  placeholder="15"
                 />
               </div>
             </>

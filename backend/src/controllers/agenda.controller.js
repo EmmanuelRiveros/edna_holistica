@@ -16,6 +16,15 @@ const pool = require('../config/db');
 // -----------------------------------------------------------
 const getCalendarEvents = async (req, res) => {
   try {
+    const isTherapist = req.user.role === 'therapist';
+    const params = isTherapist ? [req.user.id] : [];
+
+    const serviceFilter = isTherapist ? 'AND r.therapist_id = $1' : '';
+    const workshopReservationFilter = isTherapist ? 'AND r.therapist_id = $1' : '';
+    
+    const emptyWorkshopJoin = isTherapist ? 'JOIN workshop_instructors wi ON wi.workshop_id = w.id' : '';
+    const emptyWorkshopFilter = isTherapist ? 'AND wi.instructor_id = $1' : '';
+
     const [serviceReservations, workshopReservations, emptyWorkshops] =
       await Promise.all([
         // ── FUENTE 1: Citas de servicios ──
@@ -38,7 +47,9 @@ const getCalendarEvents = async (req, res) => {
            LEFT JOIN users t ON t.id = r.therapist_id
            WHERE r.service_id IS NOT NULL
              AND r.deleted_at IS NULL
-           ORDER BY r.scheduled_at`
+             ${serviceFilter}
+           ORDER BY r.scheduled_at`,
+          params
         ),
 
         // ── FUENTE 2: Reservas de talleres ──
@@ -54,7 +65,7 @@ const getCalendarEvents = async (req, res) => {
                   r.workshop_id,
                   w.name        AS workshop_name,
                   w.starts_at   AS workshop_starts_at,
-                  w.ends_at     AS workshop_ends_at,
+                  w.duration_minutes AS workshop_duration_minutes,
                   w.price::FLOAT AS workshop_price
            FROM reservations r
            JOIN users     c ON c.id = r.client_id
@@ -62,21 +73,27 @@ const getCalendarEvents = async (req, res) => {
            LEFT JOIN users t ON t.id = r.therapist_id
            WHERE r.workshop_id IS NOT NULL
              AND r.deleted_at IS NULL
-           ORDER BY r.scheduled_at`
+             ${workshopReservationFilter}
+           ORDER BY r.scheduled_at`,
+          params
         ),
 
         // ── FUENTE 3: Talleres publicados sin inscripciones ──
         pool.query(
-          `SELECT w.id, w.name, w.starts_at, w.ends_at,
+          `SELECT w.id, w.name, w.starts_at,
+                  w.starts_at + (COALESCE(w.duration_minutes, 120) || ' minutes')::interval AS ends_at,
                   w.max_capacity, w.price::FLOAT AS price,
                   w.status, w.type
            FROM workshops w
            LEFT JOIN reservations r
              ON r.workshop_id = w.id AND r.deleted_at IS NULL
+           ${emptyWorkshopJoin}
            WHERE w.status = 'published'
              AND w.deleted_at IS NULL
              AND r.id IS NULL
-           ORDER BY w.starts_at`
+             ${emptyWorkshopFilter}
+           ORDER BY w.starts_at`,
+          params
         ),
       ]);
 
@@ -110,16 +127,9 @@ const getCalendarEvents = async (req, res) => {
     // ── Mapear FUENTE 2 ──
     const workshopReservationEvents = workshopReservations.rows.map((r) => {
       const start = new Date(r.scheduled_at);
-      // Usa la duración del taller si se tienen ambas fechas, sino 120 min
-      let end;
-      if (r.workshop_starts_at && r.workshop_ends_at) {
-        const workshopDurationMs =
-          new Date(r.workshop_ends_at).getTime() -
-          new Date(r.workshop_starts_at).getTime();
-        end = new Date(start.getTime() + workshopDurationMs);
-      } else {
-        end = new Date(start.getTime() + 120 * 60_000);
-      }
+      // Usa duration_minutes del taller, sino 120 min por defecto
+      const durationMs = (r.workshop_duration_minutes || 120) * 60_000;
+      const end = new Date(start.getTime() + durationMs);
 
       return {
         id: r.id,

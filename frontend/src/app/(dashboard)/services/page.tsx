@@ -12,6 +12,7 @@ interface Service {
   name: string;
   description: string;
   duration_minutes: number;
+  buffer_minutes: number;
   price: number;
 }
 
@@ -59,6 +60,13 @@ export default function ServicesPage() {
   const [activeTab, setActiveTab] = useState<"services" | "workshops">("services");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<Record<string, any> | null>(null);
+  
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [myServiceIds, setMyServiceIds] = useState<string[]>([]);
+  const [togglingService, setTogglingService] = useState<string | null>(null);
+
+  const isAdmin = userRole === "admin";
+  const isTherapist = userRole === "therapist";
 
   // Extracted data-loading function so the modal can trigger a refresh
   const fetchData = useCallback(async () => {
@@ -67,6 +75,10 @@ export default function ServicesPage() {
       router.push("/login");
       return;
     }
+
+    const userStr = localStorage.getItem("user");
+    const role = userStr ? JSON.parse(userStr).role : null;
+    setUserRole(role);
 
     const headers = { Authorization: "Bearer " + token };
 
@@ -88,6 +100,15 @@ export default function ServicesPage() {
       } else {
         console.error("Error cargando talleres:", workshopsResult.reason);
         setWorkshops([]);
+      }
+
+      if (role === "therapist" || role === "admin") {
+        try {
+          const myServicesResult = await fetchAPI("/therapist-services/me", { headers });
+          setMyServiceIds(myServicesResult.data?.service_ids || []);
+        } catch (err) {
+          console.error("Error cargando mis servicios:", err);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al cargar datos");
@@ -134,6 +155,34 @@ export default function ServicesPage() {
     setEditingRecord(null);
   };
 
+  // ── Toggle Service (Therapist) ──
+  const handleToggleService = async (serviceId: string, isCurrentlyActive: boolean) => {
+    setTogglingService(serviceId);
+    const token = localStorage.getItem("token");
+    const headers = { Authorization: "Bearer " + token };
+
+    try {
+      if (isCurrentlyActive) {
+        await fetchAPI(`/therapist-services/${serviceId}`, {
+          method: "DELETE",
+          headers,
+        });
+        setMyServiceIds(prev => prev.filter(id => id !== serviceId));
+      } else {
+        await fetchAPI(`/therapist-services`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ service_id: serviceId }),
+        });
+        setMyServiceIds(prev => [...prev, serviceId]);
+      }
+    } catch (err) {
+      alert("Error al actualizar el estado del servicio");
+    } finally {
+      setTogglingService(null);
+    }
+  };
+
   // ── Loading ──
   if (isLoading) {
     return (
@@ -163,19 +212,28 @@ export default function ServicesPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Catálogo</h1>
+          <h1 className="text-2xl font-bold text-text-primary">
+            {isTherapist && activeTab === "services" ? "Mis Servicios — Activa los que ofreces" : "Catálogo"}
+          </h1>
           <p className="text-sm text-text-secondary mt-1">
             Gestión de servicios y talleres
           </p>
+          {isAdmin && activeTab === "services" && (
+            <p className="text-sm text-gray-500 mt-1">
+              Activa los servicios que ofreces personalmente como terapeuta
+            </p>
+          )}
         </div>
-        <button
-          onClick={() => { setEditingRecord(null); setIsModalOpen(true); }}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium
-                     text-white hover:bg-primary-dark transition-colors duration-150"
-        >
-          <Plus size={16} />
-          Nuevo Registro
-        </button>
+        {(isAdmin || (isTherapist && activeTab === "workshops")) && (
+          <button
+            onClick={() => { setEditingRecord(null); setIsModalOpen(true); }}
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium
+                       text-white hover:bg-primary-dark transition-colors duration-150"
+          >
+            <Plus size={16} />
+            {activeTab === "services" ? "Nuevo Servicio" : "Nuevo Taller"}
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -209,7 +267,16 @@ export default function ServicesPage() {
 
       {/* Contenido */}
       {activeTab === "services" ? (
-        <ServicesTable services={services} onEdit={handleEdit} onDelete={(id) => handleDelete(id, "services")} />
+        <ServicesTable 
+          services={services} 
+          onEdit={handleEdit} 
+          onDelete={(id) => handleDelete(id, "services")} 
+          isAdmin={isAdmin}
+          isTherapist={isTherapist}
+          myServiceIds={myServiceIds}
+          onToggleService={handleToggleService}
+          togglingService={togglingService}
+        />
       ) : (
         <WorkshopsTable workshops={workshops} onEdit={handleEdit} onDelete={(id) => handleDelete(id, "workshops")} />
       )}
@@ -227,7 +294,18 @@ export default function ServicesPage() {
 }
 
 // ── Tabla de Servicios ──────────────────────────────────────
-function ServicesTable({ services, onEdit, onDelete }: { services: Service[]; onEdit: (item: Service) => void; onDelete: (id: string) => void }) {
+function ServicesTable({ 
+  services, onEdit, onDelete, isAdmin, isTherapist, myServiceIds, onToggleService, togglingService 
+}: { 
+  services: Service[]; 
+  onEdit: (item: Service) => void; 
+  onDelete: (id: string) => void;
+  isAdmin: boolean;
+  isTherapist: boolean;
+  myServiceIds: string[];
+  onToggleService: (id: string, isActive: boolean) => void;
+  togglingService: string | null;
+}) {
   if (services.length === 0) {
     return (
       <div className="bg-surface rounded-xl shadow-sm border border-border/50 p-12 text-center">
@@ -247,6 +325,7 @@ function ServicesTable({ services, onEdit, onDelete }: { services: Service[]; on
             <tr className="border-b border-border bg-background/50">
               <th className="px-6 py-4 font-semibold text-text-secondary">Nombre</th>
               <th className="px-6 py-4 font-semibold text-text-secondary">Duración</th>
+              <th className="px-6 py-4 font-semibold text-text-secondary">Descanso</th>
               <th className="px-6 py-4 font-semibold text-text-secondary">Precio</th>
               <th className="px-6 py-4 font-semibold text-text-secondary text-right">Acciones</th>
             </tr>
@@ -265,25 +344,56 @@ function ServicesTable({ services, onEdit, onDelete }: { services: Service[]; on
                 <td className="px-6 py-4 text-text-secondary">
                   {service.duration_minutes} min
                 </td>
+                <td className="px-6 py-4">
+                  <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                    +{service.buffer_minutes ?? 15} min
+                  </span>
+                </td>
                 <td className="px-6 py-4 font-semibold text-text-primary">
                   {formatCurrency(service.price)}
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center justify-end gap-1">
-                    <button
-                      aria-label="Editar servicio"
-                      onClick={() => onEdit(service)}
-                      className="rounded-lg p-2 text-text-muted hover:bg-primary/10 hover:text-primary transition-colors"
-                    >
-                      <Edit size={16} />
-                    </button>
-                    <button
-                      aria-label="Eliminar servicio"
-                      onClick={() => onDelete(service.id)}
-                      className="rounded-lg p-2 text-text-muted hover:bg-danger-light hover:text-danger transition-colors"
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    {isAdmin && (
+                      <>
+                        <button
+                          aria-label="Editar servicio"
+                          onClick={() => onEdit(service)}
+                          className="rounded-lg p-2 text-text-muted hover:bg-primary/10 hover:text-primary transition-colors"
+                        >
+                          <Edit size={16} />
+                        </button>
+                        <button
+                          aria-label="Eliminar servicio"
+                          onClick={() => onDelete(service.id)}
+                          className="rounded-lg p-2 text-text-muted hover:bg-danger-light hover:text-danger transition-colors"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </>
+                    )}
+                    {(isTherapist || isAdmin) && (
+                      <button
+                        aria-label="Alternar servicio"
+                        onClick={() => onToggleService(service.id, myServiceIds.includes(service.id))}
+                        disabled={togglingService === service.id}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                          ${myServiceIds.includes(service.id) ? "bg-success" : "bg-gray-300"}
+                          ${togglingService === service.id ? "opacity-50 cursor-not-allowed" : ""}
+                        `}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                            ${myServiceIds.includes(service.id) ? "translate-x-6" : "translate-x-1"}
+                          `}
+                        />
+                        {togglingService === service.id && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                          </div>
+                        )}
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

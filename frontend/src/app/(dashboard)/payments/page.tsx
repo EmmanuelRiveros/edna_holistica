@@ -76,6 +76,18 @@ export default function PaymentsPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
+  useEffect(() => {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      try {
+        const user = JSON.parse(userStr);
+        if (user.role === 'therapist') {
+          router.replace('/agenda');
+        }
+      } catch (e) {}
+    }
+  }, [router]);
+
   // New Filters
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");

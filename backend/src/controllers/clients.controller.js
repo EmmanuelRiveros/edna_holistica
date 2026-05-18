@@ -39,6 +39,18 @@ const getAll = async (req, res) => {
     const values = [];
     let paramIndex = 1;
 
+    if (req.user.role === 'therapist') {
+      conditions.push(`u.id IN (
+        SELECT DISTINCT r.client_id 
+        FROM reservations r
+        WHERE r.therapist_id = $${paramIndex}
+        AND r.deleted_at IS NULL
+        AND r.client_id IS NOT NULL
+      )`);
+      values.push(req.user.id);
+      paramIndex++;
+    }
+
     if (search) {
       conditions.push(
         `(u.first_name || ' ' || u.last_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`
@@ -102,6 +114,18 @@ const getById = async (req, res) => {
       return res.status(403).json({
         error: 'No tienes permisos para realizar esta acción',
       });
+    }
+
+    if (req.user.role === 'therapist') {
+      const resCheck = await pool.query(
+        `SELECT id FROM reservations WHERE client_id = $1 AND therapist_id = $2 AND deleted_at IS NULL`,
+        [id, req.user.id]
+      );
+      if (resCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'No tienes acceso al expediente de este cliente',
+        });
+      }
     }
 
     const result = await pool.query(

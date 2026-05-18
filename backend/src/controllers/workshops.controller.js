@@ -23,12 +23,20 @@ const getAll = async (req, res) => {
     const { status } = req.query;
 
     // Construir WHERE dinámico
-    const conditions = ['deleted_at IS NULL'];
+    const conditions = ['workshops.deleted_at IS NULL'];
     const values = [];
     let paramIndex = 1;
 
+    let therapistJoin = '';
+    if (req.user?.role === 'therapist') {
+      therapistJoin = 'JOIN workshop_instructors wi ON wi.workshop_id = workshops.id';
+      conditions.push(`wi.instructor_id = $${paramIndex}`);
+      values.push(req.user?.id);
+      paramIndex++;
+    }
+
     if (status) {
-      conditions.push(`status = $${paramIndex}`);
+      conditions.push(`workshops.status = $${paramIndex}`);
       values.push(status);
       paramIndex++;
     }
@@ -37,17 +45,18 @@ const getAll = async (req, res) => {
 
     // Total de registros
     const countResult = await pool.query(
-      `SELECT COUNT(*) FROM workshops WHERE ${whereClause}`,
+      `SELECT COUNT(*) FROM workshops ${therapistJoin} WHERE ${whereClause}`,
       values
     );
     const total = parseInt(countResult.rows[0].count, 10);
 
     // Registros de la página actual
     const dataResult = await pool.query(
-      `SELECT id, name, description, type, starts_at, ends_at,
-              max_capacity, price::FLOAT AS price, materials,
+      `SELECT workshops.id, name, description, type, starts_at,
+              duration_minutes, max_capacity, price::FLOAT AS price,
               image_urls, status, created_at, updated_at
        FROM workshops
+       ${therapistJoin}
        WHERE ${whereClause}
        ORDER BY starts_at DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
@@ -86,8 +95,8 @@ const getById = async (req, res) => {
 
     const result = await pool.query(
       `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.ends_at, w.max_capacity,
-              w.price::FLOAT AS price, w.materials,
+              w.starts_at, w.duration_minutes, w.max_capacity,
+              w.price::FLOAT AS price,
               w.image_urls, w.status, w.created_at, w.updated_at,
               COALESCE(
                 json_agg(
@@ -133,22 +142,15 @@ const getById = async (req, res) => {
 // -----------------------------------------------------------
 const create = async (req, res) => {
   const {
-    name, description, type, starts_at, ends_at,
-    max_capacity, price, materials, image_urls, status,
+    name, description, type, starts_at, duration_minutes,
+    max_capacity, price, image_urls, status,
     instructor_ids,
   } = req.body;
 
   // Validación de campos obligatorios
-  if (!name || !type || !starts_at || !ends_at || max_capacity == null || price == null) {
+  if (!name || !type || !starts_at || max_capacity == null || price == null) {
     return res.status(400).json({
-      error: 'Los campos name, type, starts_at, ends_at, max_capacity y price son obligatorios',
-    });
-  }
-
-  // Validar que ends_at > starts_at
-  if (new Date(ends_at) <= new Date(starts_at)) {
-    return res.status(400).json({
-      error: 'La fecha de fin (ends_at) debe ser posterior a la fecha de inicio (starts_at)',
+      error: 'Los campos name, type, starts_at, max_capacity y price son obligatorios',
     });
   }
 
@@ -159,21 +161,20 @@ const create = async (req, res) => {
 
     // Insertar taller
     const workshopResult = await client.query(
-      `INSERT INTO workshops (name, description, type, starts_at, ends_at,
-                              max_capacity, price, materials, image_urls, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::TEXT[], $10)
-       RETURNING id, name, description, type, starts_at, ends_at,
-                max_capacity, price::FLOAT AS price, materials,
+      `INSERT INTO workshops (name, description, type, starts_at, duration_minutes,
+                              max_capacity, price, image_urls, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::TEXT[], $9)
+       RETURNING id, name, description, type, starts_at, duration_minutes,
+                max_capacity, price::FLOAT AS price,
                 image_urls, status, created_at, updated_at`,
       [
         name,
         description || null,
         type,
         starts_at,
-        ends_at,
+        duration_minutes || null,
         max_capacity,
         price,
-        materials || null,
         image_urls || null,
         status || 'draft',
       ]
@@ -192,13 +193,23 @@ const create = async (req, res) => {
       }
     }
 
+    if (req.user?.role === 'therapist') {
+      if (!Array.isArray(instructor_ids) || !instructor_ids.includes(req.user?.id)) {
+        await client.query(
+          `INSERT INTO workshop_instructors (workshop_id, instructor_id)
+           VALUES ($1, $2)`,
+          [newWorkshop.id, req.user?.id]
+        );
+      }
+    }
+
     await client.query('COMMIT');
 
-    // Obtener el taller completo con sus instructores (mismo query de getById)
+    // Obtener el taller completo con sus instructores
     const fullWorkshop = await pool.query(
       `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.ends_at, w.max_capacity,
-              w.price::FLOAT AS price, w.materials,
+              w.starts_at, w.duration_minutes, w.max_capacity,
+              w.price::FLOAT AS price,
               w.image_urls, w.status, w.created_at, w.updated_at,
               COALESCE(
                 json_agg(
@@ -244,8 +255,8 @@ const update = async (req, res) => {
 
   // Campos permitidos para actualizar
   const allowedFields = [
-    'name', 'description', 'type', 'starts_at', 'ends_at',
-    'max_capacity', 'price', 'materials', 'image_urls', 'status',
+    'name', 'description', 'type', 'starts_at', 'duration_minutes',
+    'max_capacity', 'price', 'image_urls', 'status',
   ];
 
   const setClauses = [];
@@ -272,6 +283,16 @@ const update = async (req, res) => {
     return res.status(400).json({
       error: 'Debes enviar al menos un campo para actualizar',
     });
+  }
+
+  if (req.user?.role === 'therapist') {
+    const instructorCheck = await pool.query(
+      'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+      [id, req.user?.id]
+    );
+    if (instructorCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'No tienes permisos para modificar este taller' });
+    }
   }
 
   const client = await pool.connect();
@@ -338,8 +359,8 @@ const update = async (req, res) => {
     // Obtener el taller actualizado con instructores
     const updatedResult = await pool.query(
       `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.ends_at, w.max_capacity,
-              w.price::FLOAT AS price, w.materials,
+              w.starts_at, w.duration_minutes, w.max_capacity,
+              w.price::FLOAT AS price,
               w.image_urls, w.status, w.created_at, w.updated_at,
               COALESCE(
                 json_agg(
@@ -383,6 +404,16 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
+    if (req.user?.role === 'therapist') {
+      const instructorCheck = await pool.query(
+        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+        [id, req.user?.id]
+      );
+      if (instructorCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'No tienes permisos para eliminar este taller' });
+      }
+    }
+
     const result = await pool.query(
       `UPDATE workshops
        SET deleted_at = NOW()
@@ -411,35 +442,27 @@ const remove = async (req, res) => {
 
 // -----------------------------------------------------------
 // PATCH /api/v1/workshops/:id/reschedule
-// Reprograma un taller actualizando starts_at y ends_at.
+// Reprograma un taller actualizando starts_at.
 // Solo admin / therapist.
 // -----------------------------------------------------------
 const reschedule = async (req, res) => {
   try {
     const { id } = req.params;
-    const { starts_at, ends_at } = req.body;
+    const { starts_at } = req.body;
 
-    // Validar campos obligatorios
-    if (!starts_at || !ends_at) {
+    // Validar campo obligatorio
+    if (!starts_at) {
       return res.status(400).json({
-        error: 'Los campos starts_at y ends_at son obligatorios',
+        error: 'El campo starts_at es obligatorio',
       });
     }
 
-    // Validar que sean fechas válidas
+    // Validar que sea fecha válida
     const parsedStart = new Date(starts_at);
-    const parsedEnd = new Date(ends_at);
 
-    if (isNaN(parsedStart.getTime()) || isNaN(parsedEnd.getTime())) {
+    if (isNaN(parsedStart.getTime())) {
       return res.status(400).json({
-        error: 'Los campos starts_at y ends_at deben ser fechas válidas',
-      });
-    }
-
-    // Regla de negocio 1: ends_at > starts_at
-    if (parsedEnd <= parsedStart) {
-      return res.status(400).json({
-        error: 'La fecha de fin (ends_at) debe ser posterior a la fecha de inicio (starts_at)',
+        error: 'El campo starts_at debe ser una fecha válida',
       });
     }
 
@@ -455,7 +478,17 @@ const reschedule = async (req, res) => {
       });
     }
 
-    // Regla de negocio 2: no reprogramar si cancelado o finalizado
+    if (req.user?.role === 'therapist') {
+      const instructorCheck = await pool.query(
+        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+        [id, req.user?.id]
+      );
+      if (instructorCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'No tienes permisos para reprogramar este taller' });
+      }
+    }
+
+    // Regla de negocio: no reprogramar si cancelado o finalizado
     const { status } = current.rows[0];
     if (status === 'cancelled' || status === 'finished') {
       return res.status(400).json({
@@ -463,15 +496,15 @@ const reschedule = async (req, res) => {
       });
     }
 
-    // Actualizar fechas
+    // Actualizar fecha
     const result = await pool.query(
       `UPDATE workshops
-       SET starts_at = $1, ends_at = $2, updated_at = NOW()
-       WHERE id = $3 AND deleted_at IS NULL
-       RETURNING id, name, description, type, starts_at, ends_at,
-                max_capacity, price::FLOAT AS price, materials,
+       SET starts_at = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL
+       RETURNING id, name, description, type, starts_at, duration_minutes,
+                max_capacity, price::FLOAT AS price,
                 image_urls, status, created_at, updated_at`,
-      [parsedStart.toISOString(), parsedEnd.toISOString(), id]
+      [parsedStart.toISOString(), id]
     );
 
     return res.status(200).json({

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { fetchAPI } from "@/lib/api";
 import {
   DollarSign,
@@ -107,9 +108,22 @@ function RankingCard({
 
 // ── Página principal ────────────────────────────────────────
 export default function DashboardPage() {
+  const router = useRouter();
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      try {
+        const user = JSON.parse(userStr);
+        if (user.role === 'therapist') {
+          router.replace('/agenda');
+        }
+      } catch (e) {}
+    }
+  }, [router]);
 
   useEffect(() => {
     const loadMetrics = async () => {

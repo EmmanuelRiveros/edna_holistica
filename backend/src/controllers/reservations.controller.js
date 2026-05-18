@@ -37,6 +37,15 @@ const getAll = async (req, res) => {
       conditions.push(`r.client_id = $${paramIndex}`);
       values.push(req.user.id);
       paramIndex++;
+    } else if (req.user.role === 'therapist') {
+      conditions.push(`r.therapist_id = $${paramIndex}`);
+      values.push(req.user.id);
+      paramIndex++;
+      if (client_id) {
+        conditions.push(`r.client_id = $${paramIndex}`);
+        values.push(client_id);
+        paramIndex++;
+      }
     } else if (client_id) {
       conditions.push(`r.client_id = $${paramIndex}`);
       values.push(client_id);
@@ -252,7 +261,7 @@ const create = async (req, res) => {
 const updateStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, cancellation_reason, notes } = req.body;
 
     const allowedStatuses = ['confirmed', 'cancelled', 'completed', 'no_show'];
 
@@ -281,13 +290,31 @@ const updateStatus = async (req, res) => {
       }
     }
 
+    const setClauses = ['status = $1', 'updated_at = NOW()'];
+    const values = [status];
+    let paramIndex = 2;
+
+    if (cancellation_reason !== undefined) {
+      setClauses.push(`cancellation_reason = $${paramIndex}`);
+      values.push(cancellation_reason);
+      paramIndex++;
+    }
+
+    if (notes !== undefined) {
+      setClauses.push(`notes = $${paramIndex}`);
+      values.push(notes);
+      paramIndex++;
+    }
+
+    values.push(id);
+
     const result = await pool.query(
       `UPDATE reservations
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
+       SET ${setClauses.join(', ')}
+       WHERE id = $${paramIndex} AND deleted_at IS NULL
        RETURNING id, client_id, therapist_id, service_id, workshop_id,
-                 scheduled_at, status, notes, created_at, updated_at`,
-      [status, id]
+                 scheduled_at, status, cancellation_reason, notes, created_at, updated_at`,
+      values
     );
 
     if (result.rows.length === 0) {

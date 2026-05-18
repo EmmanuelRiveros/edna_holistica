@@ -29,7 +29,9 @@ const getAll = async (req, res) => {
     // Registros de la página actual
     const dataResult = await pool.query(
       `SELECT id, name, description, benefits, duration_minutes,
-              price::FLOAT AS price, is_active, created_at, updated_at
+              buffer_minutes, price::FLOAT AS price, 
+              deposit_amount::FLOAT AS deposit_amount, is_active,
+              created_at, updated_at
        FROM services
        WHERE deleted_at IS NULL
        ORDER BY created_at DESC
@@ -67,7 +69,9 @@ const getById = async (req, res) => {
 
     const result = await pool.query(
       `SELECT id, name, description, benefits, duration_minutes,
-              price::FLOAT AS price, is_active, created_at, updated_at
+              buffer_minutes, price::FLOAT AS price, 
+              deposit_amount::FLOAT AS deposit_amount, is_active,
+              created_at, updated_at
        FROM services
        WHERE id = $1 AND deleted_at IS NULL`,
       [id]
@@ -98,7 +102,7 @@ const getById = async (req, res) => {
 // -----------------------------------------------------------
 const create = async (req, res) => {
   try {
-    const { name, description, benefits, duration_minutes, price, is_active } = req.body;
+    const { name, description, benefits, duration_minutes, buffer_minutes, price, deposit_amount, is_active } = req.body;
 
     // Validación de campos obligatorios
     if (!name || duration_minutes == null || price == null) {
@@ -108,16 +112,20 @@ const create = async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO services (name, description, benefits, duration_minutes, price, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO services (name, description, benefits, duration_minutes, buffer_minutes, price, deposit_amount, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, name, description, benefits, duration_minutes,
-                price::FLOAT AS price, is_active, created_at, updated_at`,
+                 buffer_minutes, price::FLOAT AS price, 
+                 deposit_amount::FLOAT AS deposit_amount, is_active,
+                 created_at, updated_at`,
       [
         name,
         description || null,
         benefits || null,
         duration_minutes,
+        buffer_minutes != null ? buffer_minutes : 15,
         price,
+        deposit_amount != null ? deposit_amount : 0,
         is_active != null ? is_active : true,
       ]
     );
@@ -144,7 +152,7 @@ const update = async (req, res) => {
     const { id } = req.params;
 
     // Campos permitidos para actualizar
-    const allowedFields = ['name', 'description', 'benefits', 'duration_minutes', 'price', 'is_active'];
+    const allowedFields = ['name', 'description', 'benefits', 'duration_minutes', 'buffer_minutes', 'price', 'deposit_amount', 'is_active'];
 
     const setClauses = [];
     const values = [];
@@ -176,7 +184,9 @@ const update = async (req, res) => {
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex} AND deleted_at IS NULL
       RETURNING id, name, description, benefits, duration_minutes,
-               price::FLOAT AS price, is_active, created_at, updated_at
+               buffer_minutes, price::FLOAT AS price, 
+               deposit_amount::FLOAT AS deposit_amount, is_active,
+               created_at, updated_at
     `;
 
     const result = await pool.query(query, values);
@@ -233,4 +243,55 @@ const remove = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, update, remove };
+// -----------------------------------------------------------
+// GET /api/v1/services/:id/therapists
+// Retorna los terapeutas y admins que ofrecen este servicio.
+// -----------------------------------------------------------
+const getTherapists = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar que el servicio existe
+    const service = await pool.query(
+      `SELECT id, name FROM services 
+       WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    );
+
+    if (service.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Servicio no encontrado' 
+      });
+    }
+
+    // Obtener terapeutas asignados (therapist Y admin)
+    const result = await pool.query(
+      `SELECT 
+         u.id,
+         u.first_name,
+         u.last_name,
+         u.email,
+         u.phone
+       FROM therapist_services ts
+       JOIN users u ON u.id = ts.therapist_id
+       WHERE ts.service_id = $1
+         AND u.deleted_at IS NULL
+         AND u.is_active = TRUE
+         AND u.role IN ('therapist', 'admin')
+       ORDER BY u.first_name ASC`,
+      [id]
+    );
+
+    return res.status(200).json({
+      data: { therapists: result.rows },
+      message: 'Terapeutas obtenidos exitosamente'
+    });
+  } catch (error) {
+    console.error('❌ Error en getTherapists:', error.message);
+    return res.status(500).json({ 
+      error: 'Error interno del servidor' 
+    });
+  }
+};
+
+module.exports = { getAll, getById, create, update, remove, getTherapists };

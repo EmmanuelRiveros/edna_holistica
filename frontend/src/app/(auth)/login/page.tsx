@@ -49,7 +49,7 @@ export default function LoginPage() {
           Edna Lugo Holística
         </h1>
         <p className="text-text-secondary text-center mb-6 text-sm mt-1">
-          Acceso al Panel Administrativo
+          Accede a tu cuenta
         </p>
 
         {/* Formulario */}

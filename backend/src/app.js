@@ -19,6 +19,16 @@ const paymentsRoutes = require('./routes/payments.routes');
 const clinicalNotesRoutes = require('./routes/clinical_notes.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
 const agendaRoutes = require('./routes/agenda.routes');
+const availabilityRoutes = require('./routes/availability.routes');
+const productsRoutes = require('./routes/products.routes');
+const categoriesRoutes = require('./routes/categories.routes');
+const ordersRoutes = require('./routes/orders.routes');
+const couponsRoutes = require('./routes/coupons.routes');
+const addressesRoutes = require('./routes/addresses.routes');
+const paymentSettingsRoutes = require('./routes/payment_settings.routes');
+const checkoutRoutes = require('./routes/checkout.routes');
+const reviewsRoutes = require('./routes/reviews.routes');
+const therapistServicesRoutes = require('./routes/therapist_services.routes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,6 +74,16 @@ app.use('/api/v1/payments', paymentsRoutes);
 app.use('/api/v1/clinical-notes', clinicalNotesRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/agenda', agendaRoutes);
+app.use('/api/v1/availability', availabilityRoutes);
+app.use('/api/v1/products', productsRoutes);
+app.use('/api/v1/categories', categoriesRoutes);
+app.use('/api/v1/orders', ordersRoutes);
+app.use('/api/v1/coupons', couponsRoutes);
+app.use('/api/v1/addresses', addressesRoutes);
+app.use('/api/v1/payment-settings', paymentSettingsRoutes);
+app.use('/api/v1/checkout', checkoutRoutes);
+app.use('/api/v1/reviews', reviewsRoutes);
+app.use('/api/v1/therapist-services', therapistServicesRoutes);
 
 // -----------------------------------------------------------
 // Arranque del servidor

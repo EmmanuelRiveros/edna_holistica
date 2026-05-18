@@ -2,12 +2,16 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
+import { Building2, Banknote, CreditCard, Wallet, CircleDollarSign } from "lucide-react";
+
 interface Service {
   id: string;
   name: string;
   description: string;
   duration_minutes: number;
   price: string;
+  deposit_amount: string;
   is_active: boolean;
 }
 
@@ -20,6 +24,7 @@ interface Workshop {
   ends_at: string;
   max_capacity: number;
   price: string;
+  deposit_amount: string;
   status: string;
 }
 
@@ -32,6 +37,10 @@ export default function AgendarPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Estados para la Fase 2
+  const [selectedTherapist, setSelectedTherapist] = useState<any | null>(null);
+  const [therapists, setTherapists] = useState<any[]>([]);
+  const [isLoadingTherapists, setIsLoadingTherapists] = useState<boolean>(false);
+  
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [selectedTime, setSelectedTime] = useState<string>('');
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
@@ -41,6 +50,12 @@ export default function AgendarPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  // Estados para la Fase 4 (Pago)
+  const [paymentType, setPaymentType] = useState<'deposit' | 'full' | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'paypal' | 'mercadopago' | 'transfer' | 'cash' | null>(null);
+  const [createdReservationId, setCreatedReservationId] = useState<string | null>(null);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   const router = useRouter();
 
@@ -83,20 +98,51 @@ export default function AgendarPage() {
   }, []);
 
   useEffect(() => {
-    if (step === 2 && selectedType === 'service' && selectedDate) {
-      setIsLoadingSlots(true);
+    if (step === 2 && selectedType === 'service' && selectedItem) {
+      setIsLoadingTherapists(true);
+      const token = localStorage.getItem('token');
       
-      // TODO: Reemplazar este mock con el endpoint real en el futuro:
-      // GET /api/v1/availability?service_id=${selectedItem?.id}&date=${selectedDate}
-      
-      // MOCK TEMPORAL:
-      const timeoutId = setTimeout(() => {
-        setAvailableSlots(['10:00', '12:30', '15:00', '17:00', '18:30']);
-        setIsLoadingSlots(false);
-      }, 500);
-      return () => clearTimeout(timeoutId);
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}/services/${selectedItem.id}/therapists`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(res => res.json())
+      .then(data => {
+        const list = data.data?.therapists || [];
+        setTherapists(list);
+        setIsLoadingTherapists(false);
+        // Si solo hay un terapeuta, seleccionarlo automáticamente
+        if (list.length === 1) {
+          setSelectedTherapist(list[0]);
+        }
+      })
+      .catch(() => setIsLoadingTherapists(false));
     }
-  }, [selectedDate, step, selectedType, selectedItem]);
+  }, [step, selectedType, selectedItem]);
+
+  useEffect(() => {
+    if (step === 2 && selectedType === 'service' && selectedDate && selectedTherapist) {
+      setIsLoadingSlots(true);
+      const token = localStorage.getItem('token');
+      
+      const url = `${process.env.NEXT_PUBLIC_API_URL}/availability/slots` +
+        `?therapist_id=${selectedTherapist.id}` +
+        `&date=${selectedDate}` +
+        `&service_id=${selectedItem?.id}`;
+      
+      fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(res => res.json())
+      .then(data => {
+        setAvailableSlots(data.data?.slots || []);
+        setIsLoadingSlots(false);
+      })
+      .catch(() => {
+        setAvailableSlots([]);
+        setIsLoadingSlots(false);
+      });
+    }
+  }, [selectedDate, selectedTherapist, step, selectedType, selectedItem]);
 
   const handleSelectService = (service: Service) => {
     setSelectedType('service');
@@ -147,6 +193,7 @@ export default function AgendarPage() {
       if (selectedType === 'service') {
         body = {
           service_id: selectedItem.id,
+          therapist_id: selectedTherapist?.id,
           scheduled_at: `${selectedDate}T${selectedTime}:00`
         };
       } else if (selectedType === 'workshop') {
@@ -165,10 +212,15 @@ export default function AgendarPage() {
       const data = await res.json();
 
       if (res.ok) {
-        setSubmitSuccess('Reserva confirmada exitosamente. Redirigiendo...');
-        setTimeout(() => {
-          router.push('/portal/reservas');
-        }, 2000);
+        const resId = data.data?.reservation?.id || data.reservation?.id || data.id;
+        setCreatedReservationId(resId);
+        
+        const depositAmount = Number(selectedItem.deposit_amount) || 0;
+        if (depositAmount === 0) {
+          setPaymentType('full');
+        }
+        
+        setStep(4);
       } else {
         const errorMsg = data.message || data.error || 'Error al procesar la reserva';
         if (errorMsg.toLowerCase().includes('cupos')) {
@@ -196,7 +248,7 @@ export default function AgendarPage() {
   return (
     <div className="max-w-4xl mx-auto p-4">
       <h1 className="text-3xl font-bold mb-2">Agendar Nueva Cita</h1>
-      <p className="text-sm text-gray-500 mb-6">Paso {step} de 3</p>
+      <p className="text-sm text-gray-500 mb-6">Paso {step} de 4</p>
 
       {step === 1 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -302,79 +354,141 @@ export default function AgendarPage() {
               </div>
             </div>
           ) : selectedType === 'service' && selectedItem ? (
-            <div>
-              <h2 className="text-xl font-semibold mb-6">Selecciona Fecha y Hora</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Columna Fecha */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Fecha de tu cita
-                  </label>
-                  <input
-                    type="date"
-                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary"
-                    min={new Date().toISOString().split('T')[0]}
-                    value={selectedDate}
-                    onChange={(e) => {
-                      setSelectedDate(e.target.value);
-                      setSelectedTime('');
-                    }}
-                  />
+            <div className="animate-fade-in">
+              <h2 className="text-xl font-semibold mb-6">Selecciona tu terapeuta</h2>
+              
+              {isLoadingTherapists ? (
+                <div className="flex justify-center items-center py-12">
+                  <svg className="animate-spin h-8 w-8 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
                 </div>
-                
-                {/* Columna Horarios */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Horarios Disponibles
-                  </label>
-                  {!selectedDate ? (
-                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center">
-                      Selecciona una fecha primero.
-                    </div>
-                  ) : isLoadingSlots ? (
-                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center flex items-center justify-center">
-                      <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Buscando horarios...
-                    </div>
-                  ) : availableSlots.length === 0 ? (
-                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center">
-                      No hay horarios disponibles para esta fecha.
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {availableSlots.map(time => (
-                        <button
-                          key={time}
-                          onClick={() => setSelectedTime(time)}
-                          className={`p-2 rounded-lg border text-center transition-colors ${
-                            selectedTime === time
-                              ? 'bg-primary text-white border-primary'
-                              : 'bg-white text-gray-700 border-gray-300 hover:border-primary'
-                          }`}
-                        >
-                          {time}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+              ) : therapists.length === 0 ? (
+                <div className="text-center p-8 bg-gray-50 border border-gray-200 rounded-lg">
+                  <p className="text-gray-500 mb-4">No hay terapeutas disponibles para este servicio en este momento.</p>
+                  <button onClick={() => {
+                    setStep(1);
+                    setSelectedTherapist(null);
+                    setTherapists([]);
+                    setSelectedDate('');
+                    setSelectedTime('');
+                    setAvailableSlots([]);
+                  }} className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors">
+                    Volver a servicios
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                  {therapists.map(t => (
+                    <div
+                      key={t.id}
+                      onClick={() => { 
+                        setSelectedTherapist(t); 
+                        setSelectedDate(''); 
+                        setSelectedTime(''); 
+                        setAvailableSlots([]); 
+                      }}
+                      className={`p-4 rounded-xl cursor-pointer transition-all flex items-center ${
+                        selectedTherapist?.id === t.id 
+                          ? 'border-2 border-primary bg-primary/5' 
+                          : 'border border-gray-200 hover:border-primary'
+                      }`}
+                    >
+                      <div className="w-12 h-12 rounded-full bg-primary text-white flex items-center justify-center text-lg font-bold mr-4">
+                        {t.first_name[0]}{t.last_name[0]}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-800">{t.first_name} {t.last_name}</h3>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedTherapist && (
+                <div className="mt-8 pt-8 border-t border-gray-200 animate-fade-in transition-opacity">
+                  <h2 className="text-xl font-semibold mb-6">Selecciona una fecha</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* Columna Fecha */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Fecha de tu cita
+                      </label>
+                      <input
+                        type="date"
+                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary focus:border-primary"
+                        min={new Date().toISOString().split('T')[0]}
+                        value={selectedDate}
+                        onChange={(e) => {
+                          setSelectedDate(e.target.value);
+                          setSelectedTime('');
+                        }}
+                      />
+                    </div>
+                    
+                    {/* Columna Horarios */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Horarios Disponibles
+                      </label>
+                      {!selectedDate ? (
+                        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center">
+                          Selecciona una fecha primero.
+                        </div>
+                      ) : isLoadingSlots ? (
+                        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center flex items-center justify-center">
+                          <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Buscando horarios...
+                        </div>
+                      ) : availableSlots.length === 0 ? (
+                        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-center">
+                          No hay horarios disponibles para esta fecha. Prueba con otro día.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                          {availableSlots.map(time => (
+                            <button
+                              key={time}
+                              onClick={() => setSelectedTime(time)}
+                              className={`p-2 rounded-lg border text-center transition-colors ${
+                                selectedTime === time
+                                  ? 'bg-primary text-white border-primary'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:border-primary'
+                              }`}
+                            >
+                              {time}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
               
               <div className="mt-8 pt-6 border-t flex justify-between items-center">
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => {
+                    setStep(1);
+                    setSelectedTherapist(null);
+                    setTherapists([]);
+                    setSelectedDate('');
+                    setSelectedTime('');
+                    setAvailableSlots([]);
+                  }}
                   className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                 >
                   Volver
                 </button>
                 <button
                   onClick={() => setStep(3)}
-                  disabled={!selectedTime}
+                  disabled={!selectedTherapist || !selectedTime}
                   className={`px-6 py-2 rounded transition-colors ${
-                    selectedTime
+                    selectedTherapist && selectedTime
                       ? 'bg-primary text-white hover:opacity-90 cursor-pointer'
                       : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }`}
@@ -399,6 +513,13 @@ export default function AgendarPage() {
                 <p className="text-sm text-gray-500">Servicio / Taller</p>
                 <p className="font-medium text-lg">{selectedItem?.name}</p>
               </div>
+              
+              {selectedType === 'service' && selectedTherapist && (
+                <div>
+                  <p className="text-sm text-gray-500">Terapeuta</p>
+                  <p className="font-medium">{selectedTherapist.first_name} {selectedTherapist.last_name}</p>
+                </div>
+              )}
               
               <div>
                 <p className="text-sm text-gray-500">Fecha y Hora</p>
@@ -460,10 +581,230 @@ export default function AgendarPage() {
                   Procesando...
                 </>
               ) : (
-                'Confirmar y Agendar'
+                'Continuar al Pago'
               )}
             </button>
           </div>
+        </div>
+      )}
+
+      {step === 4 && selectedItem && createdReservationId && (
+        <div className="bg-surface rounded-lg border border-gray-200 p-6 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-semibold mb-6 text-center">Completa tu Reserva</h2>
+          
+          <div className="mb-6">
+            <h3 className="text-lg font-medium mb-3">Resumen de Pago</h3>
+            <div className="bg-gray-50 p-4 rounded-lg flex justify-between items-center">
+              <div>
+                <p className="font-medium text-text-primary">{selectedItem.name}</p>
+                <p className="text-sm text-text-secondary">
+                  {paymentType === 'full' ? 'Pago completo' : paymentType === 'deposit' ? 'Anticipo' : 'Selecciona un tipo de pago'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-2xl font-bold text-primary">
+                  {paymentType === 'full' 
+                    ? formatCurrency(selectedItem.price) 
+                    : paymentType === 'deposit' 
+                      ? formatCurrency(selectedItem.deposit_amount) 
+                      : '$0'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {Number(selectedItem.deposit_amount) > 0 && (
+            <div className="mb-8">
+              <h3 className="text-lg font-medium mb-3">1. Selecciona cómo deseas pagar</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div 
+                  onClick={() => setPaymentType('full')}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    paymentType === 'full' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="font-semibold text-text-primary">Pago completo</span>
+                    <span className="font-bold text-primary">{formatCurrency(selectedItem.price)}</span>
+                  </div>
+                  <p className="text-xs text-text-secondary">Tu reserva queda confirmada inmediatamente.</p>
+                </div>
+
+                <div 
+                  onClick={() => setPaymentType('deposit')}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    paymentType === 'deposit' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="font-semibold text-text-primary">Pagar anticipo</span>
+                    <span className="font-bold text-primary">{formatCurrency(selectedItem.deposit_amount)}</span>
+                  </div>
+                  <p className="text-xs text-text-secondary">Paga el resto el día de tu cita.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {paymentType && (
+            <div className="mb-8">
+              <h3 className="text-lg font-medium mb-3">
+                {Number(selectedItem.deposit_amount) > 0 ? "2." : "1."} Selecciona tu método de pago
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className={`flex items-center p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'paypal' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'}`}>
+                  <input type="radio" name="paymentMethod" value="paypal" className="hidden" checked={paymentMethod === 'paypal'} onChange={() => setPaymentMethod('paypal')} />
+                  <CircleDollarSign className="text-blue-500 mr-3" size={24} />
+                  <span className="font-medium text-sm">PayPal</span>
+                </label>
+                
+                <label className={`flex items-center p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'mercadopago' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'}`}>
+                  <input type="radio" name="paymentMethod" value="mercadopago" className="hidden" checked={paymentMethod === 'mercadopago'} onChange={() => setPaymentMethod('mercadopago')} />
+                  <CreditCard className="text-sky-500 mr-3" size={24} />
+                  <span className="font-medium text-sm">MercadoPago</span>
+                </label>
+
+                <label className={`flex items-center p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'transfer' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'}`}>
+                  <input type="radio" name="paymentMethod" value="transfer" className="hidden" checked={paymentMethod === 'transfer'} onChange={() => setPaymentMethod('transfer')} />
+                  <Building2 className="text-emerald-600 mr-3" size={24} />
+                  <span className="font-medium text-sm">Transferencia</span>
+                </label>
+
+                <label className={`flex items-center p-4 border-2 rounded-xl cursor-pointer transition-colors ${paymentMethod === 'cash' ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'}`}>
+                  <input type="radio" name="paymentMethod" value="cash" className="hidden" checked={paymentMethod === 'cash'} onChange={() => setPaymentMethod('cash')} />
+                  <Banknote className="text-amber-600 mr-3" size={24} />
+                  <span className="font-medium text-sm">Efectivo (en cita)</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {submitError && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+              {submitError}
+            </div>
+          )}
+
+          {paymentMethod && paymentType && (
+            <div className="mt-8 border-t pt-6">
+              {paymentMethod === 'paypal' && process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID && (
+                <div className="w-full">
+                  <PayPalScriptProvider options={{ "clientId": process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID, currency: "MXN" }}>
+                    <PayPalButtons
+                      style={{ layout: "vertical", color: "blue", shape: "rect", label: "pay" }}
+                      createOrder={async () => {
+                        try {
+                          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/checkout/paypal/reservation-order`, {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              Authorization: `Bearer ${localStorage.getItem("token")}`,
+                            },
+                            body: JSON.stringify({
+                              reservation_id: createdReservationId,
+                              payment_type: paymentType
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || "Error al crear la orden de PayPal");
+                          return data.data.paypal_order_id;
+                        } catch (err) {
+                          setSubmitError(err instanceof Error ? err.message : "Error con PayPal");
+                          return "";
+                        }
+                      }}
+                      onApprove={async (data) => {
+                        setIsProcessingPayment(true);
+                        try {
+                          const amount = paymentType === 'full' ? Number(selectedItem.price) : Number(selectedItem.deposit_amount);
+                          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/checkout/paypal/reservation-capture`, {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              Authorization: `Bearer ${localStorage.getItem("token")}`,
+                            },
+                            body: JSON.stringify({
+                              paypal_order_id: data.orderID,
+                              reservation_id: createdReservationId,
+                              payment_type: paymentType,
+                              amount: amount
+                            }),
+                          });
+                          const result = await res.json();
+                          if (!res.ok) throw new Error(result.error || "Error al capturar el pago");
+                          
+                          router.push(`/portal/reserva/pago/exitoso?reservation_id=${createdReservationId}`);
+                        } catch (err) {
+                          setSubmitError(err instanceof Error ? err.message : "Error al confirmar el pago");
+                          setIsProcessingPayment(false);
+                        }
+                      }}
+                    />
+                  </PayPalScriptProvider>
+                </div>
+              )}
+
+              {paymentMethod === 'mercadopago' && (
+                <button
+                  disabled={isProcessingPayment}
+                  onClick={async () => {
+                    setIsProcessingPayment(true);
+                    setSubmitError(null);
+                    try {
+                      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/checkout/mp/reservation-preference`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${localStorage.getItem("token")}`,
+                        },
+                        body: JSON.stringify({
+                          reservation_id: createdReservationId,
+                          payment_type: paymentType
+                        }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || "Error al conectar con MercadoPago");
+                      
+                      window.location.href = data.data.init_point;
+                    } catch (err) {
+                      setSubmitError(err instanceof Error ? err.message : "No se pudo iniciar MercadoPago");
+                      setIsProcessingPayment(false);
+                    }
+                  }}
+                  className="w-full bg-[#009EE3] text-white py-3 rounded-lg font-semibold hover:bg-[#008CC9] transition-colors disabled:opacity-50"
+                >
+                  {isProcessingPayment ? "Redirigiendo..." : "Pagar con MercadoPago"}
+                </button>
+              )}
+
+              {paymentMethod === 'transfer' && (
+                <button
+                  disabled={isProcessingPayment}
+                  onClick={() => {
+                    const amount = paymentType === 'full' ? Number(selectedItem.price) : Number(selectedItem.deposit_amount);
+                    router.push(`/portal/reserva/pago/transferencia?reservation_id=${createdReservationId}&total=${amount}`);
+                  }}
+                  className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary-dark transition-colors"
+                >
+                  Confirmar Reserva
+                </button>
+              )}
+
+              {paymentMethod === 'cash' && (
+                <button
+                  disabled={isProcessingPayment}
+                  onClick={() => {
+                    if (window.confirm("Tu reserva quedará pendiente. Preséntate el día de tu cita con el pago en efectivo. ¿Deseas continuar?")) {
+                      router.push('/portal/reservas');
+                    }
+                  }}
+                  className="w-full border-2 border-primary text-primary py-3 rounded-lg font-semibold hover:bg-primary/5 transition-colors"
+                >
+                  Confirmar Reserva (Pago en efectivo)
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
