@@ -31,6 +31,10 @@ export default function LoginPage() {
       const role = response.data.user.role;
       if (role === 'client') {
         router.push('/portal');
+      } else if (role === 'admin') {
+        router.push('/dashboard');
+      } else if (role === 'therapist') {
+        router.push('/agenda');
       } else {
         router.push('/');
       }

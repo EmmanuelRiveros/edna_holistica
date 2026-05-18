@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 
 const navItems = [
-  { href: "/",                       label: "Dashboard",       icon: Home },
+  { href: "/dashboard",              label: "Dashboard",       icon: Home },
   { href: "/agenda",                 label: "Agenda",          icon: Calendar },
   { href: "/agenda/disponibilidad",  label: "Disponibilidad",  icon: Clock },
   { href: "/clients",                label: "Clientes",        icon: Users },
@@ -129,7 +129,7 @@ export default function DashboardLayout({
         <div className="flex h-full flex-col">
           {/* Logo */}
           <div className="flex items-center justify-between px-6 py-5 border-b border-border">
-            <Link href={isAdmin ? "/" : "/agenda"} className="block cursor-pointer">
+            <Link href={isAdmin ? "/dashboard" : "/agenda"} className="block cursor-pointer">
               <h1 className="text-lg font-bold text-primary">Edna Lugo</h1>
               <p className="text-xs text-text-muted tracking-wide">Holística</p>
             </Link>
@@ -145,7 +145,7 @@ export default function DashboardLayout({
           <nav className="flex-1 px-3 py-4 space-y-1">
             {navItems.map(({ href, label, icon: Icon }) => {
               // Filtrar items exclusivos de admin
-              if ((href === "/" || href === "/payments") && !isAdmin) return null;
+              if ((href === "/dashboard" || href === "/payments") && !isAdmin) return null;
               
               const isActive = pathname === href;
               return (
@@ -220,22 +220,7 @@ export default function DashboardLayout({
                 <Settings size={18} />
                 Configuración
               </Link>
-              <Link
-                href="/configuracion/politicas"
-                onClick={() => setSidebarOpen(false)}
-                className={`
-                  flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium
-                  transition-colors duration-150
-                  ${
-                    pathname === "/configuracion/politicas"
-                      ? "bg-primary/10 text-primary"
-                      : "text-text-secondary hover:bg-background hover:text-text-primary"
-                  }
-                `}
-              >
-                <Settings size={18} />
-                Políticas
-              </Link>
+
             </div>
           )}
 

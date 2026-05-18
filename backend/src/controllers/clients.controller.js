@@ -187,7 +187,7 @@ const updateProfile = async (req, res) => {
   }
 
   // Separar campos por tabla
-  const userFields = ['first_name', 'last_name', 'phone'];
+  const userFields = ['first_name', 'last_name', 'phone', 'email'];
   const profileFields = ['date_of_birth', 'allergies', 'medical_conditions', 'photo_url', 'preferred_contact'];
 
   const userSets = [];
@@ -224,6 +224,20 @@ const updateProfile = async (req, res) => {
 
   try {
     await client.query('BEGIN');
+
+    // Verificar si el email ya está en uso por otro usuario
+    if (req.body.email) {
+      const emailCheck = await client.query(
+        "SELECT id FROM users WHERE email = $1 AND id != $2 AND deleted_at IS NULL",
+        [req.body.email, id]
+      );
+      if (emailCheck.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'El correo electrónico ya está en uso por otra cuenta',
+        });
+      }
+    }
 
     // Verificar que el cliente existe
     const existsCheck = await client.query(
