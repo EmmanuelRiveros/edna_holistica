@@ -169,10 +169,34 @@ const feedbackEmail = ({ clientName, serviceName, reservationId }) => {
   return baseTemplate(content);
 };
 
+const cancellationEmail = ({ clientName, serviceName, date, time, therapistName }) => {
+  const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+  const content = `
+    <h2>Hola ${clientName},</h2>
+    <p>Te informamos que tu cita para <strong>${serviceName}</strong> ha sido cancelada.</p>
+    
+    <div class="card" style="border-left: 4px solid #EF4444; background: #FEF2F2;">
+      <p>📅 <strong>Fecha original:</strong> ${date}</p>
+      <p>⏰ <strong>Hora original:</strong> ${time}</p>
+      <p>👤 <strong>Terapeuta:</strong> ${therapistName}</p>
+    </div>
+
+    <p>Si deseas reagendar una nueva sesión, puedes hacerlo ingresando a nuestro portal en línea.</p>
+    
+    <div style="text-align: center;">
+      <a href="${FRONTEND_URL}/portal/agendar" class="btn" style="background: #1F2937;">Reagendar cita</a>
+    </div>
+  `;
+
+  return baseTemplate(content);
+};
+
 module.exports = {
   confirmationEmail,
   reminder24hEmail,
   reminder2hEmail,
   thankYouEmail,
-  feedbackEmail
+  feedbackEmail,
+  cancellationEmail
 };

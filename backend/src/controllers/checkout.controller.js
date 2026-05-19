@@ -364,17 +364,36 @@ const mpReservationWebhook = async (req, res) => {
             [externalRef]
           );
 
-          await pool.query(
-            `INSERT INTO payments
-               (reservation_id, payment_method, status, total_amount, paid_amount, external_reference)
-             VALUES ($1, 'mercadopago', 'completed', $2, $3, $4)`,
-            [
-              externalRef,
-              reservation.total_price,
-              payment.transaction_amount,
-              String(data.id),
-            ]
+          const payCheck = await pool.query(
+            `SELECT id FROM payments WHERE reservation_id = $1 AND deleted_at IS NULL`,
+            [externalRef]
           );
+
+          if (payCheck.rows.length > 0) {
+            await pool.query(
+              `UPDATE payments 
+               SET payment_method = 'mercadopago', status = 'completed', total_amount = $1, paid_amount = $2, external_reference = $3, updated_at = NOW()
+               WHERE reservation_id = $4`,
+              [
+                reservation.total_price,
+                payment.transaction_amount,
+                String(data.id),
+                externalRef
+              ]
+            );
+          } else {
+            await pool.query(
+              `INSERT INTO payments
+                 (reservation_id, payment_method, status, total_amount, paid_amount, external_reference)
+               VALUES ($1, 'mercadopago', 'completed', $2, $3, $4)`,
+              [
+                externalRef,
+                reservation.total_price,
+                payment.transaction_amount,
+                String(data.id),
+              ]
+            );
+          }
         }
       }
     }
@@ -633,13 +652,27 @@ const captureReservationPayPal = async (req, res) => {
       [reservation_id]
     );
 
-    // Insertar en payments
-    await pool.query(
-      `INSERT INTO payments
-         (reservation_id, payment_method, status, total_amount, paid_amount, external_reference)
-       VALUES ($1, 'paypal', 'completed', $2, $3, $4)`,
-      [reservation_id, fullPrice, capturedAmount, paypal_order_id]
+    // Verificar si ya existe un registro de pago para esta reserva
+    const payCheck = await pool.query(
+      `SELECT id FROM payments WHERE reservation_id = $1 AND deleted_at IS NULL`,
+      [reservation_id]
     );
+
+    if (payCheck.rows.length > 0) {
+      await pool.query(
+        `UPDATE payments 
+         SET payment_method = 'paypal', status = 'completed', total_amount = $1, paid_amount = $2, external_reference = $3, updated_at = NOW()
+         WHERE reservation_id = $4`,
+        [fullPrice, capturedAmount, paypal_order_id, reservation_id]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO payments
+           (reservation_id, payment_method, status, total_amount, paid_amount, external_reference)
+         VALUES ($1, 'paypal', 'completed', $2, $3, $4)`,
+        [reservation_id, fullPrice, capturedAmount, paypal_order_id]
+      );
+    }
 
     return res.status(200).json({
       data: {

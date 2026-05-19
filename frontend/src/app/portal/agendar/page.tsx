@@ -780,27 +780,67 @@ export default function AgendarPage() {
               {paymentMethod === 'transfer' && (
                 <button
                   disabled={isProcessingPayment}
-                  onClick={() => {
-                    const amount = paymentType === 'full' ? Number(selectedItem.price) : Number(selectedItem.deposit_amount);
-                    router.push(`/portal/reserva/pago/transferencia?reservation_id=${createdReservationId}&total=${amount}`);
+                  onClick={async () => {
+                    setIsProcessingPayment(true);
+                    try {
+                      const token = localStorage.getItem('token');
+                      await fetch(`${process.env.NEXT_PUBLIC_API_URL}/reservations/${createdReservationId}/status`, {
+                        method: 'PATCH',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                          status: 'pending',
+                          payment_method: 'transfer',
+                          payment_type: paymentType
+                        })
+                      });
+                      const amount = paymentType === 'full' ? Number(selectedItem.price) : Number(selectedItem.deposit_amount);
+                      router.push(`/portal/reserva/pago/transferencia?reservation_id=${createdReservationId}&total=${amount}`);
+                    } catch (err) {
+                      console.error("Error confirmando transferencia:", err);
+                    } finally {
+                      setIsProcessingPayment(false);
+                    }
                   }}
-                  className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary-dark transition-colors"
+                  className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary-dark transition-colors disabled:opacity-50"
                 >
-                  Confirmar Reserva
+                  {isProcessingPayment ? "Procesando..." : "Confirmar Reserva"}
                 </button>
               )}
 
               {paymentMethod === 'cash' && (
                 <button
                   disabled={isProcessingPayment}
-                  onClick={() => {
+                  onClick={async () => {
                     if (window.confirm("Tu reserva quedará pendiente. Preséntate el día de tu cita con el pago en efectivo. ¿Deseas continuar?")) {
-                      router.push('/portal/reservas');
+                      setIsProcessingPayment(true);
+                      try {
+                        const token = localStorage.getItem('token');
+                        await fetch(`${process.env.NEXT_PUBLIC_API_URL}/reservations/${createdReservationId}/status`, {
+                          method: 'PATCH',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify({
+                            status: 'pending',
+                            payment_method: 'cash',
+                            payment_type: paymentType
+                          })
+                        });
+                        router.push('/portal/reservas');
+                      } catch (err) {
+                        console.error("Error confirmando efectivo:", err);
+                      } finally {
+                        setIsProcessingPayment(false);
+                      }
                     }
                   }}
-                  className="w-full border-2 border-primary text-primary py-3 rounded-lg font-semibold hover:bg-primary/5 transition-colors"
+                  className="w-full border-2 border-primary text-primary py-3 rounded-lg font-semibold hover:bg-primary/5 transition-colors disabled:opacity-50"
                 >
-                  Confirmar Reserva (Pago en efectivo)
+                  {isProcessingPayment ? "Procesando..." : "Confirmar Reserva (Pago en efectivo)"}
                 </button>
               )}
             </div>

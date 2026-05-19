@@ -80,20 +80,7 @@ const emailService = {
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `❌ Cita cancelada — ${data.serviceName}`,
-        // Opción A: Si ya tienes un template creado en tu archivo de templates
-        // html: templates.cancellationEmail(data) 
-
-        // Opción B: HTML directo (Te lo dejo listo por si tienes prisa)
-        html: `
-            <div style="font-family: Arial, sans-serif; color: #333;">
-                <h2 style="color: #E67E22;">Hola ${data.clientName || 'cliente'},</h2>
-                <p>Te informamos que tu cita para <strong>${data.serviceName}</strong> ha sido cancelada.</p>
-                <p>Si deseas reagendar, puedes hacerlo directamente desde tu portal en la aplicación.</p>
-                <p style="margin-top: 20px; font-size: 12px; color: #666;">
-                   Namasté,<br>El equipo de Edna Lugo Holística.
-                </p>
-            </div>
-        `
+        html: templates.cancellationEmail(data)
       });
 
       console.log(`✅ Email de cancelación enviado a ${data.clientEmail}`);
@@ -176,6 +163,7 @@ const emailService = {
     // En el futuro: if (user.push_token) sendPushNotification(...)
     switch (type) {
       case 'confirmation': return emailService.sendConfirmation(data);
+      case 'cancellation': return emailService.sendCancellation(data);
       case 'reminder_24h': return emailService.sendReminder24h(data);
       case 'reminder_2h': return emailService.sendReminder2h(data);
       case 'thank_you': return emailService.sendThankYou(data);

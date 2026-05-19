@@ -170,7 +170,11 @@ const getById = async (req, res) => {
 // UPDATE para verificar cupos en talleres.
 // -----------------------------------------------------------
 const create = async (req, res) => {
-  const { scheduled_at, service_id, workshop_id, therapist_id } = req.body;
+  const { 
+    scheduled_at, service_id, workshop_id, therapist_id,
+    payment_method,  // 'cash' | 'transfer' | 'paypal' | 'mercadopago'
+    payment_type,    // 'full' | 'deposit'
+  } = req.body;
 
   // Validar scheduled_at
   if (!scheduled_at) {
@@ -194,11 +198,14 @@ const create = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    let totalAmount = 0;
+    let depositAmount = 0;
+
     // Si es taller, verificar cupos con bloqueo de fila
     if (workshop_id) {
       // Bloquear la fila del taller (FOR UPDATE)
       const workshopResult = await client.query(
-        'SELECT max_capacity FROM workshops WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+        'SELECT max_capacity, price::FLOAT, deposit_amount::FLOAT FROM workshops WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
         [workshop_id]
       );
 
@@ -210,6 +217,8 @@ const create = async (req, res) => {
       }
 
       const maxCapacity = workshopResult.rows[0].max_capacity;
+      totalAmount = parseFloat(workshopResult.rows[0].price || 0);
+      depositAmount = parseFloat(workshopResult.rows[0].deposit_amount || 0);
 
       // Contar reservas activas del taller
       const activeCount = await client.query(
@@ -228,14 +237,62 @@ const create = async (req, res) => {
       }
     }
 
+    if (service_id) {
+      const serviceResult = await client.query(
+        'SELECT price::FLOAT, deposit_amount::FLOAT FROM services WHERE id = $1 AND deleted_at IS NULL',
+        [service_id]
+      );
+      if (serviceResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          error: 'Servicio no encontrado',
+        });
+      }
+      totalAmount = parseFloat(serviceResult.rows[0].price || 0);
+      depositAmount = parseFloat(serviceResult.rows[0].deposit_amount || 0);
+    }
+
+    // Calcular monto a pagar según payment_type
+    const amountToPay = payment_type === 'deposit' && depositAmount > 0
+      ? depositAmount
+      : totalAmount;
+
+    // Preparar notas de la reserva incluyendo información de pago
+    let reservationNotes = req.body.notes || '';
+    if (payment_method) {
+      const payNotes = `Método de pago seleccionado: ${payment_method === 'cash' ? 'Efectivo' : payment_method === 'transfer' ? 'Transferencia' : payment_method}. Tipo: ${payment_type === 'deposit' ? 'Anticipo' : 'Pago Completo'}.`;
+      reservationNotes = reservationNotes ? `${reservationNotes} | ${payNotes}` : payNotes;
+    }
+
     // Insertar la reserva
     const insertResult = await client.query(
-      `INSERT INTO reservations (client_id, therapist_id, service_id, workshop_id, scheduled_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO reservations (client_id, therapist_id, service_id, workshop_id, scheduled_at, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, client_id, therapist_id, service_id, workshop_id,
                  scheduled_at, status, notes, created_at, updated_at`,
-      [clientId, therapist_id || null, service_id || null, workshop_id || null, scheduled_at]
+      [clientId, therapist_id || null, service_id || null, workshop_id || null, scheduled_at, reservationNotes || null]
     );
+
+    // Si se especificó un método de pago, registrar en payments
+    if (payment_method) {
+      const isOffline = payment_method === 'cash' || payment_method === 'transfer';
+      const paymentStatus = isOffline ? 'pending' : 'completed';
+      const paidVal = isOffline ? 0 : totalAmount;
+
+      await client.query(
+        `INSERT INTO payments 
+         (reservation_id, payment_method, status, 
+          total_amount, paid_amount)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          insertResult.rows[0].id,
+          payment_method,
+          paymentStatus,
+          totalAmount,  // Siempre guardar el precio completo
+          paidVal
+        ]
+      );
+    }
 
     await client.query('COMMIT');
 
@@ -245,7 +302,17 @@ const create = async (req, res) => {
       .catch(err => console.error('Email error:', err));
 
     return res.status(201).json({
-      data: { reservation: insertResult.rows[0] },
+      data: { 
+        reservation: insertResult.rows[0],
+        payment: payment_method
+          ? { 
+              method: payment_method, 
+              status: payment_method === 'cash' || payment_method === 'transfer' ? 'pending' : 'completed',
+              total_amount: totalAmount,
+              amount_due: payment_method === 'cash' || payment_method === 'transfer' ? amountToPay : 0
+            }
+          : null
+      },
       message: 'Reserva creada exitosamente',
     });
   } catch (error) {
@@ -266,9 +333,9 @@ const create = async (req, res) => {
 const updateStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, cancellation_reason, notes } = req.body;
+    let { status, cancellation_reason, notes, payment_method, payment_type } = req.body;
 
-    const allowedStatuses = ['confirmed', 'cancelled', 'completed', 'no_show'];
+    const allowedStatuses = ['pending', 'confirmed', 'cancelled', 'completed', 'no_show'];
 
     if (!status || !allowedStatuses.includes(status)) {
       return res.status(400).json({
@@ -291,6 +358,63 @@ const updateStatus = async (req, res) => {
           return res.status(400).json({
             error: 'No puedes cancelar una cita con menos de 24 horas de anticipación. Contacta directamente con el centro.',
           });
+        }
+      }
+    }
+
+    if (payment_method) {
+      // Obtener el precio y depósito de la reserva
+      const resDataResult = await pool.query(
+        `SELECT r.id, r.notes,
+                COALESCE(s.price, w.price, 0)::FLOAT AS price,
+                COALESCE(s.deposit_amount, w.deposit_amount, 0)::FLOAT AS deposit_amount
+         FROM reservations r
+         LEFT JOIN services s ON s.id = r.service_id
+         LEFT JOIN workshops w ON w.id = r.workshop_id
+         WHERE r.id = $1 AND r.deleted_at IS NULL`,
+        [id]
+      );
+      
+      if (resDataResult.rows.length > 0) {
+        const totalAmount = resDataResult.rows[0].price;
+        const depositAmount = resDataResult.rows[0].deposit_amount;
+        const amountToPay = payment_type === 'deposit' && depositAmount > 0
+          ? depositAmount
+          : totalAmount;
+
+        const isOffline = payment_method === 'cash' || payment_method === 'transfer';
+        const paymentStatus = isOffline ? 'pending' : 'completed';
+        const paidVal = isOffline ? 0 : amountToPay;
+
+        // Actualizar notas de la reserva
+        const currentNotes = resDataResult.rows[0].notes || '';
+        const payNotes = `Método de pago seleccionado: ${payment_method === 'cash' ? 'Efectivo' : payment_method === 'transfer' ? 'Transferencia' : payment_method}. Tipo: ${payment_type === 'deposit' ? 'Anticipo' : 'Pago Completo'}.`;
+        const updatedNotes = currentNotes ? `${currentNotes} | ${payNotes}` : payNotes;
+
+        // Si no se enviaron notas explícitas, usar las automáticas
+        if (notes === undefined) {
+          notes = updatedNotes;
+        }
+
+        // Crear o actualizar en payments
+        const paymentCheck = await pool.query(
+          'SELECT id FROM payments WHERE reservation_id = $1 AND deleted_at IS NULL',
+          [id]
+        );
+
+        if (paymentCheck.rows.length > 0) {
+          await pool.query(
+            `UPDATE payments 
+             SET payment_method = $1, status = $2, total_amount = $3, paid_amount = $4, updated_at = NOW()
+             WHERE reservation_id = $5`,
+            [payment_method, paymentStatus, totalAmount, paidVal, id]
+          );
+        } else {
+          await pool.query(
+            `INSERT INTO payments (reservation_id, payment_method, status, total_amount, paid_amount)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [id, payment_method, paymentStatus, totalAmount, paidVal]
+          );
         }
       }
     }
@@ -338,18 +462,9 @@ const updateStatus = async (req, res) => {
         emailService.sendNotification({ type: 'feedback', data: id })
           .catch(err => console.error('Email error:', err));
       }, 60 * 60 * 1000);
-    }
-    // 🌟 REEMPLAZA EL ELSE IF DE CANCELLED POR ESTE BLOQUE BLINDADO:
-    else if (status === 'cancelled') {
-      // Creamos una función asíncrona aislada para que corra en segundo plano
-      (async () => {
-        try {
-          await emailService.sendCancellation(id);
-        } catch (emailErr) {
-          // Si buildReservationData o Resend fallan, solo lo dejamos en la consola del servidor
-          console.error('❌ Error asíncrono en el servicio de email al cancelar:', emailErr.message);
-        }
-      })();
+    } else if (status === 'cancelled') {
+      emailService.sendNotification({ type: 'cancellation', data: id })
+        .catch(err => console.error('Email error:', err));
     }
 
     // 🟢 Al estar aislado el correo, esto se ejecutará SIEMPRE, regresando un 200 a tu frontend
