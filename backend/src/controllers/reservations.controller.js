@@ -328,28 +328,36 @@ const updateStatus = async (req, res) => {
       });
     }
 
+    const emailService = require('../services/email.service');
+
     if (status === 'completed') {
-      const emailService = require('../services/email.service');
       emailService.sendNotification({ type: 'thank_you', data: id })
         .catch(err => console.error('Email error:', err));
 
-      // Después de 1 hora enviar solicitud de feedback
       setTimeout(() => {
         emailService.sendNotification({ type: 'feedback', data: id })
           .catch(err => console.error('Email error:', err));
       }, 60 * 60 * 1000);
     }
-
+    // 🌟 REEMPLAZA EL ELSE IF DE CANCELLED POR ESTE BLOQUE BLINDADO:
     else if (status === 'cancelled') {
-
-      emailService.sendCancellation(id)
-        .catch(err => console.error('Error enviando email de cancelación:', err));
+      // Creamos una función asíncrona aislada para que corra en segundo plano
+      (async () => {
+        try {
+          await emailService.sendCancellation(id);
+        } catch (emailErr) {
+          // Si buildReservationData o Resend fallan, solo lo dejamos en la consola del servidor
+          console.error('❌ Error asíncrono en el servicio de email al cancelar:', emailErr.message);
+        }
+      })();
     }
 
+    // 🟢 Al estar aislado el correo, esto se ejecutará SIEMPRE, regresando un 200 a tu frontend
     return res.status(200).json({
       data: { reservation: result.rows[0] },
       message: 'Status de reserva actualizado exitosamente',
     });
+
   } catch (error) {
     console.error('❌ Error en updateStatus reservations:', error.message);
     return res.status(500).json({
