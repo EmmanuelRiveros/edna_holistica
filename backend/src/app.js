@@ -38,7 +38,7 @@ const PORT = process.env.PORT || 3000;
 // -----------------------------------------------------------
 app.use(cors({
   origin: '*', // Permite peticiones desde Vercel, el celular, localhost, etc.
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   credentials: true
 }));
