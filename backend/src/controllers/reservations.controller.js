@@ -282,7 +282,7 @@ const updateStatus = async (req, res) => {
         'SELECT scheduled_at FROM reservations WHERE id = $1',
         [id]
       );
-      
+
       if (currentRes.rows.length > 0) {
         const scheduledAt = currentRes.rows[0].scheduled_at;
         const hoursUntilAppointment = (new Date(scheduledAt) - new Date()) / (1000 * 60 * 60);
@@ -332,12 +332,18 @@ const updateStatus = async (req, res) => {
       const emailService = require('../services/email.service');
       emailService.sendNotification({ type: 'thank_you', data: id })
         .catch(err => console.error('Email error:', err));
-      
+
       // Después de 1 hora enviar solicitud de feedback
       setTimeout(() => {
         emailService.sendNotification({ type: 'feedback', data: id })
           .catch(err => console.error('Email error:', err));
       }, 60 * 60 * 1000);
+    }
+
+    else if (status === 'cancelled') {
+
+      emailService.sendCancellation(id)
+        .catch(err => console.error('Error enviando email de cancelación:', err));
     }
 
     return res.status(200).json({

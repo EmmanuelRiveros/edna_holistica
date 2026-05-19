@@ -24,21 +24,21 @@ const buildReservationData = async (reservationId) => {
      WHERE r.id = $1`,
     [reservationId]
   );
-  
+
   if (result.rows.length === 0) {
     throw new Error('Reserva no encontrada');
   }
 
   const row = result.rows[0];
   const isVirtual = row.workshop_type === 'virtual';
-  
+
   return {
     clientName: row.client_first_name,
     clientEmail: row.client_email,
     serviceName: row.service_name || row.workshop_name,
     therapistName: `${row.therapist_first_name || ''} ${row.therapist_last_name || ''}`.trim() || 'No asignado',
     date: new Date(row.scheduled_at).toLocaleDateString('es-MX', {
-      weekday: 'long', year: 'numeric', 
+      weekday: 'long', year: 'numeric',
       month: 'long', day: 'numeric'
     }),
     time: new Date(row.scheduled_at).toLocaleTimeString('es-MX', {
@@ -57,31 +57,62 @@ const emailService = {
   sendConfirmation: async (reservationId) => {
     try {
       const data = await buildReservationData(reservationId);
-      
+
       await resend.emails.send({
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `✅ Tu cita está confirmada — ${data.serviceName}`,
         html: templates.confirmationEmail(data)
       });
-      
+
       console.log(`✅ Email de confirmación enviado a ${data.clientEmail}`);
     } catch (error) {
       console.error('❌ Error enviando email de confirmación:', error.message);
     }
   },
 
+  // Enviar aviso de cancelación
+  sendCancellation: async (reservationId) => {
+    try {
+      const data = await buildReservationData(reservationId);
+
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM,
+        to: data.clientEmail,
+        subject: `❌ Cita cancelada — ${data.serviceName}`,
+        // Opción A: Si ya tienes un template creado en tu archivo de templates
+        // html: templates.cancellationEmail(data) 
+
+        // Opción B: HTML directo (Te lo dejo listo por si tienes prisa)
+        html: `
+            <div style="font-family: Arial, sans-serif; color: #333;">
+                <h2 style="color: #E67E22;">Hola ${data.clientName || 'cliente'},</h2>
+                <p>Te informamos que tu cita para <strong>${data.serviceName}</strong> ha sido cancelada.</p>
+                <p>Si deseas reagendar, puedes hacerlo directamente desde tu portal en la aplicación.</p>
+                <p style="margin-top: 20px; font-size: 12px; color: #666;">
+                   Namasté,<br>El equipo de Edna Lugo Holística.
+                </p>
+            </div>
+        `
+      });
+
+      console.log(`✅ Email de cancelación enviado a ${data.clientEmail}`);
+    } catch (error) {
+      console.error('❌ Error enviando email de cancelación:', error.message);
+    }
+  },
+
   sendReminder24h: async (reservationId) => {
     try {
       const data = await buildReservationData(reservationId);
-      
+
       await resend.emails.send({
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `⏰ Recordatorio: Tu cita es mañana`,
         html: templates.reminder24hEmail(data)
       });
-      
+
       console.log(`✅ Email de recordatorio (24h) enviado a ${data.clientEmail}`);
     } catch (error) {
       console.error('❌ Error enviando email de recordatorio 24h:', error.message);
@@ -91,14 +122,14 @@ const emailService = {
   sendReminder2h: async (reservationId) => {
     try {
       const data = await buildReservationData(reservationId);
-      
+
       await resend.emails.send({
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `🔔 Tu cita es en 2 horas`,
         html: templates.reminder2hEmail(data)
       });
-      
+
       console.log(`✅ Email de recordatorio (2h) enviado a ${data.clientEmail}`);
     } catch (error) {
       console.error('❌ Error enviando email de recordatorio 2h:', error.message);
@@ -108,14 +139,14 @@ const emailService = {
   sendThankYou: async (reservationId) => {
     try {
       const data = await buildReservationData(reservationId);
-      
+
       await resend.emails.send({
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `🙏 Gracias por tu visita — ${data.serviceName}`,
         html: templates.thankYouEmail(data)
       });
-      
+
       console.log(`✅ Email de agradecimiento enviado a ${data.clientEmail}`);
     } catch (error) {
       console.error('❌ Error enviando email de agradecimiento:', error.message);
@@ -125,14 +156,14 @@ const emailService = {
   sendFeedbackRequest: async (reservationId) => {
     try {
       const data = await buildReservationData(reservationId);
-      
+
       await resend.emails.send({
         from: process.env.EMAIL_FROM,
         to: data.clientEmail,
         subject: `⭐ ¿Cómo fue tu sesión de ${data.serviceName}?`,
         html: templates.feedbackEmail(data)
       });
-      
+
       console.log(`✅ Email de feedback enviado a ${data.clientEmail}`);
     } catch (error) {
       console.error('❌ Error enviando email de feedback:', error.message);
@@ -143,7 +174,7 @@ const emailService = {
   sendNotification: async ({ type, userId, data }) => {
     // Por ahora solo email
     // En el futuro: if (user.push_token) sendPushNotification(...)
-    switch(type) {
+    switch (type) {
       case 'confirmation': return emailService.sendConfirmation(data);
       case 'reminder_24h': return emailService.sendReminder24h(data);
       case 'reminder_2h': return emailService.sendReminder2h(data);
