@@ -37,7 +37,7 @@ function PortalLayoutInner({ children }: { children: React.ReactNode }) {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    router.push("/login");
+    router.push("/");
   };
 
   const { itemCount } = useCart();

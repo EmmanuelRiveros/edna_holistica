@@ -2,6 +2,7 @@
 
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link"; // 🌟 Importación agregada
 import { fetchAPI } from "@/lib/api";
 
 export default function LoginPage() {
@@ -46,7 +47,16 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+    <div className="min-h-screen flex items-center justify-center bg-background px-4 relative">
+
+      {/* 🌟 Botón para volver al inicio */}
+      <Link
+        href="/"
+        className="absolute top-6 left-6 text-sm flex items-center gap-2 text-text-secondary hover:text-primary transition-colors duration-150"
+      >
+        ← Volver al inicio
+      </Link>
+
       <div className="bg-surface p-8 rounded-lg shadow-md max-w-md w-full">
         {/* Logo */}
         <h1 className="text-primary font-bold text-2xl text-center">
@@ -117,6 +127,17 @@ export default function LoginPage() {
           >
             {isLoading ? "Cargando..." : "Iniciar Sesión"}
           </button>
+
+          {/* 🌟 Enlace de registro */}
+          <div className="text-center text-sm text-text-secondary mt-6 pt-4 border-t border-border">
+            ¿No tienes una cuenta?{" "}
+            <Link
+              href="/register"
+              className="text-primary font-medium hover:underline transition-all"
+            >
+              Regístrate aquí
+            </Link>
+          </div>
         </form>
       </div>
     </div>

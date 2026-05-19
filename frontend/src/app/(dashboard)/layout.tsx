@@ -22,20 +22,20 @@ import {
 } from "lucide-react";
 
 const navItems = [
-  { href: "/dashboard",              label: "Dashboard",       icon: Home },
-  { href: "/agenda",                 label: "Agenda",          icon: Calendar },
-  { href: "/agenda/disponibilidad",  label: "Disponibilidad",  icon: Clock },
-  { href: "/clients",                label: "Clientes",        icon: Users },
-  { href: "/services",               label: "Catálogo",        icon: Sparkles },
-  { href: "/payments",               label: "Pagos",           icon: CreditCard },
+  { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/agenda", label: "Agenda", icon: Calendar },
+  { href: "/agenda/disponibilidad", label: "Disponibilidad", icon: Clock },
+  { href: "/clients", label: "Clientes", icon: Users },
+  { href: "/services", label: "Catálogo", icon: Sparkles },
+  { href: "/payments", label: "Pagos", icon: CreditCard },
 ];
 
 const tiendaItems = [
-  { href: "/tienda",             label: "Productos",    icon: Package },
-  { href: "/tienda/categorias",  label: "Categorías",   icon: Tag },
-  { href: "/tienda/ordenes",     label: "Órdenes",      icon: ShoppingCart },
-  { href: "/tienda/cupones",     label: "Cupones",      icon: Ticket },
-  { href: "/tienda/resenas",     label: "Reseñas",      icon: Star },
+  { href: "/tienda", label: "Productos", icon: Package },
+  { href: "/tienda/categorias", label: "Categorías", icon: Tag },
+  { href: "/tienda/ordenes", label: "Órdenes", icon: ShoppingCart },
+  { href: "/tienda/cupones", label: "Cupones", icon: Ticket },
+  { href: "/tienda/resenas", label: "Reseñas", icon: Star },
 ];
 
 export default function DashboardLayout({
@@ -53,7 +53,7 @@ export default function DashboardLayout({
   useEffect(() => {
     const token = localStorage.getItem("token");
     const userStr = localStorage.getItem("user");
-    
+
     // Sin token: redirigir a login
     if (!token) {
       router.replace("/login");
@@ -68,7 +68,7 @@ export default function DashboardLayout({
 
     try {
       const user = JSON.parse(userStr);
-      
+
       // Si es cliente: redirigir al portal
       if (user.role === "client") {
         router.replace("/portal");
@@ -87,13 +87,13 @@ export default function DashboardLayout({
       // Si hay error al parsear: limpiar y redirigir
       localStorage.removeItem("token");
       localStorage.removeItem("user");
-      router.replace("/login");
+      router.replace("/");
     }
   }, [router]);
 
   const handleLogout = () => {
     localStorage.removeItem("token");
-    router.replace("/login");
+    router.replace("/");
   };
 
   // No renderizar hasta que se verifique el token y rol
@@ -146,7 +146,7 @@ export default function DashboardLayout({
             {navItems.map(({ href, label, icon: Icon }) => {
               // Filtrar items exclusivos de admin
               if ((href === "/dashboard" || href === "/payments") && !isAdmin) return null;
-              
+
               const isActive = pathname === href;
               return (
                 <Link
@@ -156,10 +156,9 @@ export default function DashboardLayout({
                   className={`
                     flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium
                     transition-colors duration-150
-                    ${
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "text-text-secondary hover:bg-background hover:text-text-primary"
+                    ${isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-text-secondary hover:bg-background hover:text-text-primary"
                     }
                   `}
                 >
@@ -185,10 +184,9 @@ export default function DashboardLayout({
                       className={`
                         flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium
                         transition-colors duration-150
-                        ${
-                          isActive
-                            ? "bg-primary/10 text-primary"
-                            : "text-text-secondary hover:bg-background hover:text-text-primary"
+                        ${isActive
+                          ? "bg-primary/10 text-primary"
+                          : "text-text-secondary hover:bg-background hover:text-text-primary"
                         }
                       `}
                     >
@@ -210,10 +208,9 @@ export default function DashboardLayout({
                 className={`
                   flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium
                   transition-colors duration-150
-                  ${
-                    pathname === "/configuracion"
-                      ? "bg-primary/10 text-primary"
-                      : "text-text-secondary hover:bg-background hover:text-text-primary"
+                  ${pathname === "/configuracion"
+                    ? "bg-primary/10 text-primary"
+                    : "text-text-secondary hover:bg-background hover:text-text-primary"
                   }
                 `}
               >
