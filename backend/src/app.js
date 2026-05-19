@@ -36,7 +36,12 @@ const PORT = process.env.PORT || 3000;
 // -----------------------------------------------------------
 // Middleware global
 // -----------------------------------------------------------
-app.use(cors());
+app.use(cors({
+  origin: '*', // Permite peticiones desde Vercel, el celular, localhost, etc.
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  credentials: true
+}));
 app.use(express.json());
 
 // -----------------------------------------------------------
