@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchAPI } from "@/lib/api";
-import { Save, Clock, Loader2, Info, CheckCircle2, ShieldCheck } from "lucide-react";
+import { Save, Clock, Loader2, Info, CheckCircle2 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────
 interface DaySchedule {
@@ -38,9 +38,6 @@ export default function DisponibilidadPage() {
 
   // State
   const [schedule, setSchedule] = useState<DaySchedule[]>(buildDefaultSchedule());
-  const [cancellationWindowHours, setCancellationWindowHours] = useState(24);
-  const [refundPercentageBeforeWindow, setRefundPercentageBeforeWindow] = useState(100);
-  const [refundPercentageAfterWindow, setRefundPercentageAfterWindow] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -82,13 +79,6 @@ export default function DisponibilidadPage() {
         });
 
         setSchedule(merged);
-
-        // Hydrate cancellation policy from settings
-        if (settings) {
-          setCancellationWindowHours(settings.cancellation_window_hours ?? 24);
-          setRefundPercentageBeforeWindow(settings.refund_percentage_before_window ?? 100);
-          setRefundPercentageAfterWindow(settings.refund_percentage_after_window ?? 0);
-        }
       } catch {
         // If no availability yet, keep defaults — no error needed
       } finally {
@@ -146,11 +136,6 @@ export default function DisponibilidadPage() {
             end_time: d.end_time,
             is_active: d.is_active,
           })),
-          settings: {
-            cancellation_window_hours: cancellationWindowHours,
-            refund_percentage_before_window: refundPercentageBeforeWindow,
-            refund_percentage_after_window: refundPercentageAfterWindow,
-          },
         }),
       });
 
@@ -194,11 +179,10 @@ export default function DisponibilidadPage() {
       {/* Toast message */}
       {message && (
         <div
-          className={`mb-6 flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium transition-all duration-300 ${
-            message.type === "success"
+          className={`mb-6 flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium transition-all duration-300 ${message.type === "success"
               ? "bg-success-light text-green-800"
               : "bg-danger-light text-red-800"
-          }`}
+            }`}
         >
           {message.type === "success" ? <CheckCircle2 size={16} /> : <Info size={16} />}
           {message.text}
@@ -231,15 +215,14 @@ export default function DisponibilidadPage() {
               className={`grid grid-cols-1 sm:grid-cols-[1fr_80px_1fr_1fr] gap-3 items-center
                           rounded-lg px-3 py-3 transition-colors duration-150
                           ${day.is_active
-                            ? "bg-primary/5 border border-primary/20"
-                            : "bg-background border border-transparent hover:border-border"
-                          }`}
+                  ? "bg-primary/5 border border-primary/20"
+                  : "bg-background border border-transparent hover:border-border"
+                }`}
             >
               {/* Day name */}
               <span
-                className={`text-sm font-medium ${
-                  day.is_active ? "text-text-primary" : "text-text-muted"
-                }`}
+                className={`text-sm font-medium ${day.is_active ? "text-text-primary" : "text-text-muted"
+                  }`}
               >
                 {DAY_NAMES[day.day_of_week]}
               </span>
@@ -275,9 +258,9 @@ export default function DisponibilidadPage() {
                   className={`w-full rounded-lg border px-3 py-2 text-sm transition-colors
                               focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
                               ${day.is_active
-                                ? "border-border bg-white text-text-primary"
-                                : "border-transparent bg-gray-100 text-text-muted cursor-not-allowed"
-                              }`}
+                      ? "border-border bg-white text-text-primary"
+                      : "border-transparent bg-gray-100 text-text-muted cursor-not-allowed"
+                    }`}
                 />
               </div>
 
@@ -292,9 +275,9 @@ export default function DisponibilidadPage() {
                   className={`w-full rounded-lg border px-3 py-2 text-sm transition-colors
                               focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
                               ${day.is_active
-                                ? "border-border bg-white text-text-primary"
-                                : "border-transparent bg-gray-100 text-text-muted cursor-not-allowed"
-                              }`}
+                      ? "border-border bg-white text-text-primary"
+                      : "border-transparent bg-gray-100 text-text-muted cursor-not-allowed"
+                    }`}
                 />
               </div>
             </div>
@@ -312,84 +295,7 @@ export default function DisponibilidadPage() {
         </div>
       </div>
 
-      {/* ── Section 2: Cancellation Policy ── */}
-      <div className="bg-surface rounded-xl shadow-sm border border-border/50 p-5 lg:p-6 mb-6">
-        <div className="flex items-center gap-2 mb-5">
-          <ShieldCheck size={18} className="text-primary" />
-          <h2 className="text-base font-semibold text-text-primary">
-            Políticas de Cancelación y Reembolso
-          </h2>
-        </div>
 
-        <div className="space-y-5">
-          {/* Rule 1: Cancellation window */}
-          <p className="text-sm text-text-secondary leading-relaxed">
-            El cliente puede cancelar o reagendar su cita hasta{" "}
-            <input
-              type="number"
-              min={0}
-              value={cancellationWindowHours}
-              onChange={(e) => setCancellationWindowHours(Math.max(0, parseInt(e.target.value, 10) || 0))}
-              className="inline-block w-16 rounded-md border border-border bg-white px-2 py-1 text-sm
-                         text-center font-semibold text-text-primary
-                         focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
-                         transition-colors mx-1"
-            />
-            {" "}horas antes de la cita.
-          </p>
-
-          {/* Rule 2: Refund before window */}
-          <p className="text-sm text-text-secondary leading-relaxed">
-            Si cancela{" "}
-            <span className="font-semibold text-green-700">ANTES</span>
-            {" "}del límite de tiempo, se le reembolsará el{" "}
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={refundPercentageBeforeWindow}
-              onChange={(e) => setRefundPercentageBeforeWindow(
-                Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0))
-              )}
-              className="inline-block w-16 rounded-md border border-border bg-white px-2 py-1 text-sm
-                         text-center font-semibold text-text-primary
-                         focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
-                         transition-colors mx-1"
-            />
-            {" "}% del pago total.
-          </p>
-
-          {/* Rule 3: Refund after window */}
-          <p className="text-sm text-text-secondary leading-relaxed">
-            Si cancela{" "}
-            <span className="font-semibold text-red-600">DESPUÉS</span>
-            {" "}del límite de tiempo (o no asiste), se le reembolsará el{" "}
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={refundPercentageAfterWindow}
-              onChange={(e) => setRefundPercentageAfterWindow(
-                Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0))
-              )}
-              className="inline-block w-16 rounded-md border border-border bg-white px-2 py-1 text-sm
-                         text-center font-semibold text-text-primary
-                         focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary
-                         transition-colors mx-1"
-            />
-            {" "}% del pago.
-          </p>
-        </div>
-
-        {/* Preview summary */}
-        <div className="mt-5 rounded-lg bg-background border border-border/50 px-4 py-3">
-          <p className="text-xs text-text-muted">
-            <span className="font-semibold">Resumen:</span>{" "}
-            Cancelación libre hasta {cancellationWindowHours}h antes → reembolso {refundPercentageBeforeWindow}%.
-            Después → reembolso {refundPercentageAfterWindow}%.
-          </p>
-        </div>
-      </div>
 
       {/* ── Save Button ── */}
       <div className="flex justify-end">

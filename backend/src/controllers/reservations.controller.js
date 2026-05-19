@@ -239,6 +239,11 @@ const create = async (req, res) => {
 
     await client.query('COMMIT');
 
+    const emailService = require('../services/email.service');
+    // No await — no bloquear la respuesta
+    emailService.sendNotification({ type: 'confirmation', data: insertResult.rows[0].id })
+      .catch(err => console.error('Email error:', err));
+
     return res.status(201).json({
       data: { reservation: insertResult.rows[0] },
       message: 'Reserva creada exitosamente',
@@ -321,6 +326,18 @@ const updateStatus = async (req, res) => {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
+    }
+
+    if (status === 'completed') {
+      const emailService = require('../services/email.service');
+      emailService.sendNotification({ type: 'thank_you', data: id })
+        .catch(err => console.error('Email error:', err));
+      
+      // Después de 1 hora enviar solicitud de feedback
+      setTimeout(() => {
+        emailService.sendNotification({ type: 'feedback', data: id })
+          .catch(err => console.error('Email error:', err));
+      }, 60 * 60 * 1000);
     }
 
     return res.status(200).json({

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { User, Calendar, CalendarPlus, Activity } from "lucide-react";
+import { User, Calendar, CalendarPlus, Activity, ShoppingBag } from "lucide-react";
 
 export default function PortalDashboardPage() {
   const [userName, setUserName] = useState("");
@@ -41,7 +41,7 @@ export default function PortalDashboardPage() {
       </section>
 
       {/* ── Quick Actions / Stats ── */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
 
         {/* Card 1: Próximas Citas */}
         <Link href="/portal/reservas" className="group">
@@ -89,6 +89,23 @@ export default function PortalDashboardPage() {
               </h3>
               <p className="text-sm text-text-secondary">
                 Gestiona tu información de salud.
+              </p>
+            </div>
+          </div>
+        </Link>
+
+        {/* Card 4: Tienda */}
+        <Link href="/portal/tienda" className="group">
+          <div className="bg-surface rounded-xl p-6 border border-border/50 shadow-sm hover:shadow-md transition-all h-full flex flex-col items-start gap-4">
+            <div className="p-3 rounded-xl bg-purple-100 text-purple-600 group-hover:scale-110 transition-transform">
+              <ShoppingBag size={28} />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg text-text-primary mb-1 group-hover:text-purple-600 transition-colors">
+                Tienda Holística
+              </h3>
+              <p className="text-sm text-text-secondary">
+                Adquiere productos físicos para complementar tu bienestar.
               </p>
             </div>
           </div>
