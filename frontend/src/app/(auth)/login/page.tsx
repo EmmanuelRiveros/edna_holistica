@@ -132,7 +132,7 @@ export default function LoginPage() {
           <div className="text-center text-sm text-text-secondary mt-6 pt-4 border-t border-border">
             ¿No tienes una cuenta?{" "}
             <Link
-              href="/register"
+              href="/registro"
               className="text-primary font-medium hover:underline transition-all"
             >
               Regístrate aquí
