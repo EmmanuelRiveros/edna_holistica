@@ -1,0 +1,67 @@
+name: Mirror Folders to Standalone Repos
+
+on:
+  push:
+    branches:
+      - feature/migracion-mysql
+
+jobs:
+  mirror-subdirectories:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Monorepo
+        uses: actions/checkout@v4
+
+      - name: Configurar Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # --- ESPEJO DEL FRONTEND ---
+      - name: Sincronizar Frontend
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.REPO_MIRROR_TOKEN }}
+        run: |
+          # 1. Clonar el repositorio destino del frontend
+          git clone https://x-access-token:${API_TOKEN_GITHUB}@github.com/${{ github.repository_owner }}/edna_holistica_frontend.git frontend-mirror
+          
+          # 2. Limpiar todo el contenido viejo en el destino (excepto la carpeta .git)
+          find frontend-mirror -maxdepth 1 ! -name '.git' ! -name 'frontend-mirror' -exec rm -rf {} +
+          
+          # 3. Copiar el nuevo contenido desde la carpeta /frontend del monorepo
+          cp -r frontend/* frontend-mirror/
+          
+          # 4. Hacer commit y push si hay cambios
+          cd frontend-mirror
+          git add .
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Sincronizado desde Monorepo (${{ github.sha }})"
+            git push origin main
+          else
+            echo "Sin cambios en el Frontend."
+          fi
+
+      # --- ESPEJO DEL BACKEND ---
+      - name: Sincronizar Backend
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.REPO_MIRROR_TOKEN }}
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 1. Clonar el repositorio destino del backend
+          git clone https://x-access-token:${API_TOKEN_GITHUB}@github.com/${{ github.repository_owner }}/edna_holistica_backend.git backend-mirror
+          
+          # 2. Limpiar todo el contenido viejo en el destino (excepto la carpeta .git)
+          find backend-mirror -maxdepth 1 ! -name '.git' ! -name 'backend-mirror' -exec rm -rf {} +
+          
+          # 3. Copiar el nuevo contenido desde la carpeta /backend del monorepo
+          cp -r backend/* backend-mirror/
+          
+          # 4. Hacer commit y push si hay cambios
+          cd backend-mirror
+          git add .
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Sincronizado desde Monorepo (${{ github.sha }})"
+            git push origin main
+          else
+            echo "Sin cambios en el Backend."
+          fi
