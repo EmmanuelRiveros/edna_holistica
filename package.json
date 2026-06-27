@@ -2,5 +2,9 @@
   "dependencies": {
     "cors": "^2.8.6",
     "lucide-react": "^1.16.0"
+  },
+  "scripts": {
+    "build": "npm run build --prefix frontend",
+    "start": "npm start --prefix frontend"
   }
 }
