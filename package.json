@@ -1,4 +1,8 @@
 {
+  "dependencies": {
+    "cors": "^2.8.6",
+    "lucide-react": "^1.16.0"
+  },
   "scripts": {
     "build": "npm install --prefix frontend && npx --prefix frontend cross-env NODE_ENV=production npm run build --prefix frontend && mv frontend/.next ./.next",
     "start": "npx --prefix frontend cross-env NODE_ENV=production npm start --prefix frontend"
