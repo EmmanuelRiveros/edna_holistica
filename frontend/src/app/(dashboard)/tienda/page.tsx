@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchAPI } from "@/lib/api";
+import { fetchAPI, parseImageUrls } from "@/lib/api";
 import {
   Plus, Search, Pencil, Trash2, Package, Loader2,
   BoxesIcon, X,
@@ -69,7 +69,11 @@ export default function TiendaProductosPage() {
     try {
       const qs = q ? `?search=${encodeURIComponent(q)}&limit=100` : "?limit=100";
       const res = await fetchAPI(`/products${qs}`, { headers });
-      setProducts(res.data.products);
+      const parsedProducts = res.data.products.map((p: any) => ({
+        ...p,
+        image_urls: parseImageUrls(p.image_urls)
+      }));
+      setProducts(parsedProducts);
     } catch { /* keep current */ }
     finally { setIsLoading(false); }
   }, [getHeaders]);
@@ -282,7 +286,7 @@ function ProductModal({
     allows_shipping: product?.allows_shipping ?? true,
     allows_pickup: product?.allows_pickup ?? true,
     is_active: product?.is_active ?? true,
-    image_urls_text: product?.image_urls?.join("\n") || "",
+    image_urls_text: parseImageUrls(product?.image_urls).join("\n"),
   });
   const [isSaving, setIsSaving] = useState(false);
 

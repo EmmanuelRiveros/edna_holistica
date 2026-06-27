@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { fetchAPI } from "@/lib/api";
+import { fetchAPI, parseImageUrls } from "@/lib/api";
 import { useCart, type CartProduct } from "@/context/CartContext";
 import { ArrowLeft, Leaf, Minus, Plus, ShoppingCart, Truck, Store, Star, Loader2 } from "lucide-react";
 
@@ -48,7 +48,11 @@ export default function ProductDetailPage() {
     const fetchProduct = async () => {
       try {
         const res = await fetchAPI(`/products/${id}`);
-        setProduct(res.data.product);
+        const prod = res.data.product;
+        if (prod) {
+          prod.image_urls = parseImageUrls(prod.image_urls);
+        }
+        setProduct(prod);
       } catch { /* ignore */ }
       finally { setIsLoading(false); }
     };

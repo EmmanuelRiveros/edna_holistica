@@ -26,3 +26,21 @@ export const fetchAPI = async (endpoint: string, options?: RequestInit) => {
 
   return response.json();
 };
+
+export const parseImageUrls = (imageUrls: any): string[] => {
+  if (!imageUrls) return [];
+  if (Array.isArray(imageUrls)) return imageUrls;
+  if (typeof imageUrls === "string") {
+    const trimmed = imageUrls.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        // Ignore and treat as single string
+      }
+    }
+    return [trimmed];
+  }
+  return [String(imageUrls)];
+};

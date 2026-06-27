@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchAPI } from "@/lib/api";
+import { fetchAPI, parseImageUrls } from "@/lib/api";
 import { useCart, type CartProduct } from "@/context/CartContext";
 import { Search, ShoppingCart, Leaf, Plus } from "lucide-react";
 
@@ -41,7 +41,11 @@ export default function TiendaPortalPage() {
       if (q) params.set("search", q);
       if (catId) params.set("category_id", catId);
       const res = await fetchAPI(`/products?${params.toString()}`);
-      setProducts(res.data.products);
+      const parsedProducts = res.data.products.map((p: any) => ({
+        ...p,
+        image_urls: parseImageUrls(p.image_urls)
+      }));
+      setProducts(parsedProducts);
     } catch { /* ignore */ }
     finally { setIsLoading(false); }
   }, []);
