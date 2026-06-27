@@ -7,6 +7,7 @@
 // ============================================================
 
 const pool = require('../config/db');
+const { v4: uuidv4 } = require('uuid');
 
 // -----------------------------------------------------------
 // Helper: Obtiene disponibilidad y settings por therapist_id
@@ -38,10 +39,10 @@ const fetchAvailability = async (therapistId) => {
   const settings = settingsResult.length > 0
     ? settingsResult[0]
     : {
-        cancellation_window_hours: 24,
-        refund_percentage_before_window: 100,
-        refund_percentage_after_window: 0,
-      };
+      cancellation_window_hours: 24,
+      refund_percentage_before_window: 100,
+      refund_percentage_after_window: 0,
+    };
 
   return {
     availability,
@@ -115,9 +116,10 @@ const updateMyAvailability = async (req, res) => {
     for (const day of availability) {
       await conn.query(
         `INSERT INTO therapist_availability
-           (therapist_id, day_of_week, start_time, end_time, is_active)
-         VALUES (?, ?, ?, ?, ?)`,
+           (id, therapist_id, day_of_week, start_time, end_time, is_active)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         [
+          uuidv4(),
           req.user.id,
           day.day_of_week,
           day.start_time,
