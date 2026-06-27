@@ -27,6 +27,7 @@ export default function ProductDetailPage() {
   const [product, setProduct] = useState<Product | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [quantity, setQuantity] = useState(1);
+  const [selectedImg, setSelectedImg] = useState<string | null>(null);
 
   // Reviews State
   const [reviews, setReviews] = useState<any[]>([]);
@@ -51,6 +52,9 @@ export default function ProductDetailPage() {
         const prod = res.data.product;
         if (prod) {
           prod.image_urls = parseImageUrls(prod.image_urls);
+          if (prod.image_urls && prod.image_urls.length > 0) {
+            setSelectedImg(prod.image_urls[0]);
+          }
         }
         setProduct(prod);
       } catch { /* ignore */ }
@@ -200,16 +204,40 @@ export default function ProductDetailPage() {
       </button>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Image */}
-        <div className="bg-surface rounded-xl border border-border/50 overflow-hidden aspect-square flex items-center justify-center">
-          {product.image_urls && product.image_urls.length > 0 ? (
-            <img
-              src={product.image_urls[0]}
-              alt={product.name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <Leaf size={64} className="text-text-muted/20" />
+        {/* Image & Thumbnails Gallery */}
+        <div className="flex flex-col gap-3">
+          <div className="bg-surface rounded-xl border border-border/50 overflow-hidden aspect-square flex items-center justify-center">
+            {selectedImg ? (
+              <img
+                src={selectedImg}
+                alt={product.name}
+                className="h-full w-full object-cover animate-fade-in"
+              />
+            ) : (
+              <Leaf size={64} className="text-text-muted/20" />
+            )}
+          </div>
+
+          {product.image_urls && product.image_urls.length > 1 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border">
+              {product.image_urls.map((url, index) => (
+                <button
+                  key={index}
+                  onClick={() => setSelectedImg(url)}
+                  className={`h-16 w-16 rounded-lg border-2 overflow-hidden flex-shrink-0 transition-all ${
+                    selectedImg === url
+                      ? "border-primary scale-95"
+                      : "border-border/50 hover:border-primary/50"
+                  }`}
+                >
+                  <img
+                    src={url}
+                    alt={`${product.name} thumbnail ${index + 1}`}
+                    className="h-full w-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
