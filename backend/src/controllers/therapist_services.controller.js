@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -9,12 +10,12 @@ const getMyServices = async (req, res) => {
   try {
     const therapist_id = req.user.id;
 
-    const result = await pool.query(
-      `SELECT service_id FROM therapist_services WHERE therapist_id = $1`,
+    const [rows] = await pool.query(
+      `SELECT service_id FROM therapist_services WHERE therapist_id = ?`,
       [therapist_id]
     );
 
-    const service_ids = result.rows.map(row => row.service_id);
+    const service_ids = rows.map(row => row.service_id);
 
     return res.status(200).json({
       data: { service_ids },
@@ -45,30 +46,39 @@ const addService = async (req, res) => {
     }
 
     // Validar que el servicio existe y está activo
-    const serviceCheck = await pool.query(
-      `SELECT id FROM services WHERE id = $1 AND is_active = true AND deleted_at IS NULL`,
+    const [serviceCheck] = await pool.query(
+      `SELECT id FROM services WHERE id = ? AND is_active = true AND deleted_at IS NULL`,
       [service_id]
     );
 
-    if (serviceCheck.rows.length === 0) {
+    if (serviceCheck.length === 0) {
       return res.status(404).json({
         error: 'El servicio no existe o no está activo',
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO therapist_services (therapist_id, service_id)
-       VALUES ($1, $2)
-       RETURNING id, therapist_id, service_id, created_at`,
-      [therapist_id, service_id]
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO therapist_services (id, therapist_id, service_id)
+       VALUES (?, ?, ?)`,
+      [id, therapist_id, service_id]
+    );
+
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, therapist_id, service_id, created_at
+       FROM therapist_services WHERE id = ?`,
+      [id]
     );
 
     return res.status(201).json({
-      data: result.rows[0],
+      data: rows[0],
       message: 'Servicio agregado exitosamente',
     });
   } catch (error) {
-    if (error.code === '23505') { // Violación de unicidad
+    // Violación de unicidad en MySQL
+    if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
       return res.status(409).json({
         error: 'Ya tienes este servicio activado',
       });
@@ -90,21 +100,29 @@ const removeService = async (req, res) => {
     const therapist_id = req.user.id;
     const { service_id } = req.params;
 
-    const result = await pool.query(
-      `DELETE FROM therapist_services 
-       WHERE therapist_id = $1 AND service_id = $2
-       RETURNING id`,
+    // Primero obtener el id del registro a eliminar (para devolverlo)
+    const [existing] = await pool.query(
+      `SELECT id FROM therapist_services 
+       WHERE therapist_id = ? AND service_id = ?`,
       [therapist_id, service_id]
     );
 
-    if (result.rows.length === 0) {
+    if (existing.length === 0) {
       return res.status(404).json({
         error: 'La relación con este servicio no existe',
       });
     }
 
+    const deletedId = existing[0].id;
+
+    await pool.query(
+      `DELETE FROM therapist_services 
+       WHERE therapist_id = ? AND service_id = ?`,
+      [therapist_id, service_id]
+    );
+
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id: deletedId },
       message: 'Servicio eliminado exitosamente',
     });
   } catch (error) {

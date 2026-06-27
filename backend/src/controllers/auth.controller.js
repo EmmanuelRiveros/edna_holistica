@@ -10,6 +10,7 @@
 
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 const SALT_ROUNDS = 10;
@@ -40,20 +41,20 @@ const register = async (req, res) => {
     });
   }
 
-  // Obtener un client del pool para manejar la transacción
-  const client = await pool.connect();
+  // Obtener una conexión del pool para manejar la transacción
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar si el email ya existe (solo entre no eliminados)
-    const existing = await client.query(
-      'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
+    const [existing] = await conn.query(
+      'SELECT id FROM users WHERE email = ? AND deleted_at IS NULL',
       [email]
     );
 
-    if (existing.rows.length > 0) {
-      await client.query('ROLLBACK');
+    if (existing.length > 0) {
+      await conn.query('ROLLBACK');
       return res.status(409).json({
         error: 'El email ya está registrado',
       });
@@ -62,23 +63,32 @@ const register = async (req, res) => {
     // Hashear contraseña
     const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
 
+    // Generar UUID en Node
+    const userId = crypto.randomUUID();
+
     // Insertar usuario con rol 'client' por defecto
-    const userResult = await client.query(
-      `INSERT INTO users (first_name, last_name, email, password_hash, phone, role)
-       VALUES ($1, $2, $3, $4, $5, 'client')
-       RETURNING id, first_name, last_name, email, phone, role, is_active, created_at`,
-      [first_name, last_name, email, password_hash, phone || null]
+    await conn.query(
+      `INSERT INTO users (id, first_name, last_name, email, password_hash, phone, \`role\`)
+       VALUES (?, ?, ?, ?, ?, ?, 'client')`,
+      [userId, first_name, last_name, email, password_hash, phone || null]
     );
 
-    const newUser = userResult.rows[0];
+    // Obtener el usuario recién creado
+    const [userRows] = await conn.query(
+      `SELECT id, first_name, last_name, email, phone, \`role\`, is_active, created_at
+       FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    const newUser = { ...userRows[0], is_active: !!userRows[0].is_active };
 
     // Insertar registro vacío en client_profiles vinculado al usuario
-    await client.query(
-      `INSERT INTO client_profiles (user_id) VALUES ($1)`,
+    await conn.query(
+      `INSERT INTO client_profiles (user_id) VALUES (?)`,
       [newUser.id]
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Generar token JWT
     const token = generateToken(newUser);
@@ -91,14 +101,14 @@ const register = async (req, res) => {
       message: 'Usuario registrado exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en register:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    // Devolver el client al pool (SIEMPRE, incluso si hubo error)
-    client.release();
+    // Devolver la conexión al pool (SIEMPRE, incluso si hubo error)
+    conn.release();
   }
 };
 
@@ -119,21 +129,21 @@ const login = async (req, res) => {
 
   try {
     // Buscar usuario activo no eliminado
-    const result = await pool.query(
-      `SELECT id, first_name, last_name, email, password_hash, phone, role, is_active, created_at
+    const [rows] = await pool.query(
+      `SELECT id, first_name, last_name, email, password_hash, phone, \`role\`, is_active, created_at
        FROM users
-       WHERE email = $1 AND deleted_at IS NULL`,
+       WHERE email = ? AND deleted_at IS NULL`,
       [email]
     );
 
     // Email no encontrado → mensaje genérico
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(401).json({
         error: 'Credenciales inválidas',
       });
     }
 
-    const user = result.rows[0];
+    const user = { ...rows[0], is_active: !!rows[0].is_active };
 
     // Cuenta desactivada
     if (!user.is_active) {
@@ -180,14 +190,14 @@ const login = async (req, res) => {
 // -----------------------------------------------------------
 const me = async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT
          u.id,
          u.first_name,
          u.last_name,
          u.email,
          u.phone,
-         u.role,
+         u.\`role\`,
          u.is_active,
          u.created_at,
          cp.id              AS profile_id,
@@ -198,17 +208,17 @@ const me = async (req, res) => {
          cp.preferred_contact
        FROM users u
        LEFT JOIN client_profiles cp ON cp.user_id = u.id
-       WHERE u.id = $1 AND u.deleted_at IS NULL`,
+       WHERE u.id = ? AND u.deleted_at IS NULL`,
       [req.user.id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Usuario no encontrado',
       });
     }
 
-    const row = result.rows[0];
+    const row = rows[0];
 
     // Estructurar respuesta: datos base + perfil de cliente (si aplica)
     const userData = {
@@ -218,7 +228,7 @@ const me = async (req, res) => {
       email: row.email,
       phone: row.phone,
       role: row.role,
-      is_active: row.is_active,
+      is_active: !!row.is_active,
       created_at: row.created_at,
     };
 

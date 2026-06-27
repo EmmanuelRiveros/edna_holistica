@@ -27,28 +27,28 @@ const getMetrics = async (req, res) => {
       // ─── MÉTRICA 1: Total de clientes registrados ───
       pool.query(
         `SELECT
-           COUNT(*)::INTEGER AS total,
-           COUNT(*) FILTER (WHERE is_active = TRUE)::INTEGER AS active
+           CAST(COUNT(*) AS UNSIGNED) AS total,
+           CAST(SUM(is_active) AS UNSIGNED) AS active
          FROM users
-         WHERE role = 'client' AND deleted_at IS NULL`
+         WHERE \`role\` = 'client' AND deleted_at IS NULL`
       ),
 
       // ─── MÉTRICA 2: Clientes nuevos por mes (últimos 6 meses) ───
       pool.query(
         `SELECT
-           DATE_TRUNC('month', created_at) AS month,
-           COUNT(*)::INTEGER AS count
+           DATE_FORMAT(created_at, '%Y-%m-01') AS month,
+           CAST(COUNT(*) AS UNSIGNED) AS count
          FROM users
-         WHERE role = 'client'
+         WHERE \`role\` = 'client'
            AND deleted_at IS NULL
-           AND created_at >= NOW() - INTERVAL '6 months'
-         GROUP BY DATE_TRUNC('month', created_at)
+           AND created_at >= NOW() - INTERVAL 6 MONTH
+         GROUP BY DATE_FORMAT(created_at, '%Y-%m-01')
          ORDER BY month ASC`
       ),
 
       // ─── MÉTRICA 3: Reservas por estado ───
       pool.query(
-        `SELECT status, COUNT(*)::INTEGER AS count
+        `SELECT status, CAST(COUNT(*) AS UNSIGNED) AS count
          FROM reservations
          WHERE deleted_at IS NULL
          GROUP BY status`
@@ -57,9 +57,9 @@ const getMetrics = async (req, res) => {
       // ─── MÉTRICA 4: Ingresos totales y pendientes ───
       pool.query(
         `SELECT
-           COALESCE(SUM(total_amount), 0)::FLOAT AS total_billed,
-           COALESCE(SUM(paid_amount), 0)::FLOAT AS total_paid,
-           COALESCE(SUM(pending_amount), 0)::FLOAT AS total_pending
+           COALESCE(SUM(total_amount), 0) AS total_billed,
+           COALESCE(SUM(paid_amount), 0) AS total_paid,
+           COALESCE(SUM(pending_amount), 0) AS total_pending
          FROM payments
          WHERE deleted_at IS NULL`
       ),
@@ -69,7 +69,7 @@ const getMetrics = async (req, res) => {
         `SELECT
            r.service_id,
            s.name,
-           COUNT(*)::INTEGER AS reservations_count
+           CAST(COUNT(*) AS UNSIGNED) AS reservations_count
          FROM reservations r
          JOIN services s ON s.id = r.service_id
          WHERE r.service_id IS NOT NULL AND r.deleted_at IS NULL
@@ -83,7 +83,7 @@ const getMetrics = async (req, res) => {
         `SELECT
            r.workshop_id,
            w.name,
-           COUNT(*)::INTEGER AS reservations_count,
+           CAST(COUNT(*) AS UNSIGNED) AS reservations_count,
            w.max_capacity
          FROM reservations r
          JOIN workshops w ON w.id = r.workshop_id
@@ -99,8 +99,8 @@ const getMetrics = async (req, res) => {
            w.id AS workshop_id,
            w.name,
            w.max_capacity,
-           COUNT(r.id)::INTEGER AS active_reservations,
-           ROUND((COUNT(r.id)::NUMERIC / w.max_capacity::NUMERIC) * 100, 1)::FLOAT AS occupancy_rate
+           CAST(COUNT(r.id) AS UNSIGNED) AS active_reservations,
+           ROUND((COUNT(r.id) / w.max_capacity) * 100, 1) AS occupancy_rate
          FROM workshops w
          LEFT JOIN reservations r
            ON r.workshop_id = w.id
@@ -117,21 +117,22 @@ const getMetrics = async (req, res) => {
            u.id AS therapist_id,
            u.first_name,
            u.last_name,
-           COUNT(r.id) FILTER (WHERE r.status = 'completed')::INTEGER AS completed,
-           COUNT(r.id) FILTER (WHERE r.status = 'confirmed')::INTEGER AS confirmed,
-           COUNT(r.id)::INTEGER AS total
+           CAST(SUM(CASE WHEN r.status = 'completed' THEN 1 ELSE 0 END) AS UNSIGNED) AS completed,
+           CAST(SUM(CASE WHEN r.status = 'confirmed' THEN 1 ELSE 0 END) AS UNSIGNED) AS confirmed,
+           CAST(COUNT(r.id) AS UNSIGNED) AS total
          FROM users u
          LEFT JOIN reservations r
            ON r.therapist_id = u.id
            AND r.deleted_at IS NULL
-         WHERE u.role = 'therapist' AND u.is_active = TRUE AND u.deleted_at IS NULL
+         WHERE u.\`role\` = 'therapist' AND u.is_active = TRUE AND u.deleted_at IS NULL
          GROUP BY u.id, u.first_name, u.last_name
          ORDER BY total DESC`
       ),
     ]);
 
+    // mysql2 devuelve [rows, fields]
     // Transformar métrica 3: de array a objeto
-    const reservationsByStatus = reservationsByStatusResult.rows.reduce((acc, row) => {
+    const reservationsByStatus = reservationsByStatusResult[0].reduce((acc, row) => {
       acc[row.status] = row.count;
       return acc;
     }, { pending: 0, confirmed: 0, cancelled: 0, completed: 0, no_show: 0 });
@@ -139,14 +140,14 @@ const getMetrics = async (req, res) => {
     return res.status(200).json({
       data: {
         metrics: {
-          clients: clientsResult.rows[0],
-          new_clients_by_month: newClientsByMonthResult.rows,
+          clients: clientsResult[0][0],
+          new_clients_by_month: newClientsByMonthResult[0],
           reservations_by_status: reservationsByStatus,
-          revenue: revenueResult.rows[0],
-          top_services: topServicesResult.rows,
-          top_workshops: topWorkshopsResult.rows,
-          workshop_occupancy: workshopOccupancyResult.rows,
-          therapist_load: therapistLoadResult.rows,
+          revenue: revenueResult[0][0],
+          top_services: topServicesResult[0],
+          top_workshops: topWorkshopsResult[0],
+          workshop_occupancy: workshopOccupancyResult[0],
+          therapist_load: therapistLoadResult[0],
         },
       },
       message: 'Métricas obtenidas exitosamente',

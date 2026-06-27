@@ -5,13 +5,14 @@
 // pending_amount es columna generada (solo lectura).
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // Columnas de lectura para pagos (incluye pending_amount generado)
 const PAYMENT_COLS = `id, reservation_id, payment_method, status,
-                      total_amount::FLOAT AS total_amount,
-                      paid_amount::FLOAT AS paid_amount,
-                      pending_amount::FLOAT AS pending_amount,
+                      total_amount,
+                      paid_amount,
+                      pending_amount,
                       receipt_url, external_reference,
                       created_at, updated_at`;
 
@@ -45,15 +46,22 @@ const create = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO payments (reservation_id, payment_method, total_amount, paid_amount, receipt_url, external_reference)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING ${PAYMENT_COLS}`,
-      [reservation_id, payment_method, total_amount, paidValue, receipt_url || null, external_reference || null]
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO payments (id, reservation_id, payment_method, total_amount, paid_amount, receipt_url, external_reference)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, reservation_id, payment_method, total_amount, paidValue, receipt_url || null, external_reference || null]
+    );
+
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT ${PAYMENT_COLS} FROM payments WHERE id = ?`,
+      [id]
     );
 
     return res.status(201).json({
-      data: { payment: result.rows[0] },
+      data: { payment: rows[0] },
       message: 'Pago creado exitosamente',
     });
   } catch (error) {
@@ -77,13 +85,11 @@ const update = async (req, res) => {
 
     const setClauses = [];
     const values = [];
-    let paramIndex = 1;
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
-        setClauses.push(`${field} = $${paramIndex}`);
+        setClauses.push(`${field} = ?`);
         values.push(req.body[field]);
-        paramIndex++;
       }
     }
 
@@ -95,18 +101,18 @@ const update = async (req, res) => {
 
     // Si se actualiza paid_amount, validar contra total_amount
     if (req.body.paid_amount !== undefined) {
-      const current = await pool.query(
-        'SELECT total_amount FROM payments WHERE id = $1 AND deleted_at IS NULL',
+      const [current] = await pool.query(
+        'SELECT total_amount FROM payments WHERE id = ? AND deleted_at IS NULL',
         [id]
       );
 
-      if (current.rows.length === 0) {
+      if (current.length === 0) {
         return res.status(404).json({
           error: 'Pago no encontrado',
         });
       }
 
-      const totalAmount = parseFloat(current.rows[0].total_amount);
+      const totalAmount = parseFloat(current[0].total_amount);
 
       if (req.body.paid_amount > totalAmount) {
         return res.status(400).json({
@@ -119,23 +125,27 @@ const update = async (req, res) => {
     setClauses.push('updated_at = NOW()');
     values.push(id);
 
-    const query = `
-      UPDATE payments
-      SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex} AND deleted_at IS NULL
-      RETURNING ${PAYMENT_COLS}
-    `;
+    const [result] = await pool.query(
+      `UPDATE payments
+       SET ${setClauses.join(', ')}
+       WHERE id = ? AND deleted_at IS NULL`,
+      values
+    );
 
-    const result = await pool.query(query, values);
-
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Pago no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT ${PAYMENT_COLS} FROM payments WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { payment: result.rows[0] },
+      data: { payment: rows[0] },
       message: 'Pago actualizado exitosamente',
     });
   } catch (error) {
@@ -156,19 +166,19 @@ const getByReservation = async (req, res) => {
     const { id } = req.params;
 
     // Verificar que la reserva existe y obtener el client_id
-    const reservation = await pool.query(
-      'SELECT client_id FROM reservations WHERE id = $1 AND deleted_at IS NULL',
+    const [reservation] = await pool.query(
+      'SELECT client_id FROM reservations WHERE id = ? AND deleted_at IS NULL',
       [id]
     );
 
-    if (reservation.rows.length === 0) {
+    if (reservation.length === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
 
     // Verificar permisos
-    const reservationData = reservation.rows[0];
+    const reservationData = reservation[0];
     if (
       req.user.role !== 'admin' &&
       req.user.role !== 'therapist' &&
@@ -180,16 +190,16 @@ const getByReservation = async (req, res) => {
     }
 
     // Obtener pagos
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT ${PAYMENT_COLS}
        FROM payments
-       WHERE reservation_id = $1 AND deleted_at IS NULL
+       WHERE reservation_id = ? AND deleted_at IS NULL
        ORDER BY created_at DESC`,
       [id]
     );
 
     return res.status(200).json({
-      data: { payments: result.rows },
+      data: { payments: rows },
       message: 'Pagos obtenidos exitosamente',
     });
   } catch (error) {
@@ -214,30 +224,25 @@ const getAll = async (req, res) => {
 
     const conditions = ['p.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     if (status) {
-      conditions.push(`p.status = $${paramIndex}`);
+      conditions.push(`p.status = ?`);
       values.push(status);
-      paramIndex++;
     }
 
     if (search) {
-      conditions.push(`((u.first_name || ' ' || u.last_name) ILIKE $${paramIndex} OR s.name ILIKE $${paramIndex} OR w.name ILIKE $${paramIndex})`);
-      values.push(`%${search}%`);
-      paramIndex++;
+      conditions.push(`(CONCAT(u.first_name, ' ', u.last_name) LIKE ? OR s.name LIKE ? OR w.name LIKE ?)`);
+      values.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     if (startDate) {
-      conditions.push(`p.created_at >= $${paramIndex}`);
+      conditions.push(`p.created_at >= ?`);
       values.push(startDate);
-      paramIndex++;
     }
 
     if (endDate) {
-      conditions.push(`p.created_at <= ($${paramIndex}::DATE + INTERVAL '1 day - 1 second')`);
+      conditions.push(`p.created_at <= DATE_ADD(?, INTERVAL 1 DAY) - INTERVAL 1 SECOND`);
       values.push(endDate);
-      paramIndex++;
     }
 
     const whereClause = conditions.join(' AND ');
@@ -251,16 +256,16 @@ const getAll = async (req, res) => {
     `;
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) ${baseJoins} WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total ${baseJoins} WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT p.id, p.payment_method, p.status, 
-              p.total_amount::FLOAT, p.paid_amount::FLOAT, p.pending_amount::FLOAT,
+              p.total_amount, p.paid_amount, p.pending_amount,
               p.receipt_url, p.external_reference, p.created_at,
               r.id AS reservation_id, r.scheduled_at,
               u.first_name AS client_first_name, u.last_name AS client_last_name, u.email AS client_email,
@@ -269,13 +274,13 @@ const getAll = async (req, res) => {
        ${baseJoins}
        WHERE ${whereClause}
        ORDER BY p.created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
     return res.status(200).json({
       data: {
-        payments: result.rows,
+        payments: rows,
         pagination: {
           total,
           page,

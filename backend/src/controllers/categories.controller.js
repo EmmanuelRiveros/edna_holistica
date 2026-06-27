@@ -4,6 +4,7 @@
 // Funciones: getAll, create, update, remove (soft)
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -13,7 +14,7 @@ const pool = require('../config/db');
 // -----------------------------------------------------------
 const getAll = async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, name, description, created_at, updated_at
        FROM product_categories
        WHERE deleted_at IS NULL
@@ -21,7 +22,7 @@ const getAll = async (req, res) => {
     );
 
     return res.status(200).json({
-      data: { categories: result.rows },
+      data: { categories: rows },
       message: 'Categorías obtenidas exitosamente',
     });
   } catch (error) {
@@ -46,15 +47,23 @@ const create = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO product_categories (name, description)
-       VALUES ($1, $2)
-       RETURNING id, name, description, created_at, updated_at`,
-      [name, description || null]
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO product_categories (id, name, description)
+       VALUES (?, ?, ?)`,
+      [id, name, description || null]
+    );
+
+    // Obtener la fila recién insertada (para created_at generado por la DB)
+    const [rows] = await pool.query(
+      `SELECT id, name, description, created_at, updated_at
+       FROM product_categories WHERE id = ?`,
+      [id]
     );
 
     return res.status(201).json({
-      data: { category: result.rows[0] },
+      data: { category: rows[0] },
       message: 'Categoría creada exitosamente',
     });
   } catch (error) {
@@ -82,39 +91,42 @@ const update = async (req, res) => {
 
     const setClauses = [];
     const values = [];
-    let paramIndex = 1;
 
     if (name !== undefined) {
-      setClauses.push(`name = $${paramIndex}`);
+      setClauses.push(`name = ?`);
       values.push(name);
-      paramIndex++;
     }
 
     if (description !== undefined) {
-      setClauses.push(`description = $${paramIndex}`);
+      setClauses.push(`description = ?`);
       values.push(description);
-      paramIndex++;
     }
 
     setClauses.push('updated_at = NOW()');
     values.push(id);
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE product_categories
        SET ${setClauses.join(', ')}
-       WHERE id = $${paramIndex} AND deleted_at IS NULL
-       RETURNING id, name, description, created_at, updated_at`,
+       WHERE id = ? AND deleted_at IS NULL`,
       values
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Categoría no encontrada',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, created_at, updated_at
+       FROM product_categories WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { category: result.rows[0] },
+      data: { category: rows[0] },
       message: 'Categoría actualizada exitosamente',
     });
   } catch (error) {
@@ -133,22 +145,21 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE product_categories
        SET deleted_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Categoría no encontrada',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Categoría eliminada exitosamente',
     });
   } catch (error) {

@@ -5,6 +5,7 @@
 // Maneja los datos bancarios para transferencias.
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -14,7 +15,7 @@ const pool = require('../config/db');
 // -----------------------------------------------------------
 const get = async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, bank_name, account_holder, account_number,
               clabe, additional_info, updated_at
        FROM payment_settings
@@ -22,7 +23,7 @@ const get = async (req, res) => {
     );
 
     return res.status(200).json({
-      data: { settings: result.rows[0] || {} },
+      data: { settings: rows[0] || {} },
       message: 'Configuración de pago obtenida exitosamente',
     });
   } catch (error) {
@@ -36,7 +37,7 @@ const get = async (req, res) => {
 // -----------------------------------------------------------
 // PUT /api/v1/payment-settings
 // Crea o actualiza la configuración. Solo admin.
-// Usa INSERT ... ON CONFLICT DO UPDATE (un solo registro).
+// Usa lógica de check-then-insert/update (un solo registro).
 // -----------------------------------------------------------
 const upsert = async (req, res) => {
   try {
@@ -45,60 +46,67 @@ const upsert = async (req, res) => {
       clabe, additional_info,
     } = req.body;
 
-    const result = await pool.query(
-      `INSERT INTO payment_settings
-         (id, bank_name, account_holder, account_number, clabe, additional_info, updated_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (id) DO UPDATE SET
-         bank_name = EXCLUDED.bank_name,
-         account_holder = EXCLUDED.account_holder,
-         account_number = EXCLUDED.account_number,
-         clabe = EXCLUDED.clabe,
-         additional_info = EXCLUDED.additional_info,
-         updated_at = NOW()
-       RETURNING id, bank_name, account_holder, account_number,
-                 clabe, additional_info, updated_at`,
-      [
-        bank_name || null,
-        account_holder || null,
-        account_number || null,
-        clabe || null,
-        additional_info || null,
-      ]
-    );
+    // Buscar si ya existe un registro
+    const [existing] = await pool.query('SELECT id FROM payment_settings LIMIT 1');
 
-    // Si ya existe un registro, actualizarlo directamente
-    if (result.rows.length === 0) {
-      // Fallback: buscar el existente y actualizar
-      const existing = await pool.query('SELECT id FROM payment_settings LIMIT 1');
-      if (existing.rows.length > 0) {
-        const updateResult = await pool.query(
-          `UPDATE payment_settings
-           SET bank_name = $1, account_holder = $2, account_number = $3,
-               clabe = $4, additional_info = $5, updated_at = NOW()
-           WHERE id = $6
-           RETURNING id, bank_name, account_holder, account_number,
-                     clabe, additional_info, updated_at`,
-          [
-            bank_name || null,
-            account_holder || null,
-            account_number || null,
-            clabe || null,
-            additional_info || null,
-            existing.rows[0].id,
-          ]
-        );
-        return res.status(200).json({
-          data: { settings: updateResult.rows[0] },
-          message: 'Configuración de pago actualizada exitosamente',
-        });
-      }
+    if (existing.length > 0) {
+      // Actualizar el registro existente
+      await pool.query(
+        `UPDATE payment_settings
+         SET bank_name = ?, account_holder = ?, account_number = ?,
+             clabe = ?, additional_info = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [
+          bank_name || null,
+          account_holder || null,
+          account_number || null,
+          clabe || null,
+          additional_info || null,
+          existing[0].id,
+        ]
+      );
+
+      const [updatedRows] = await pool.query(
+        `SELECT id, bank_name, account_holder, account_number,
+                clabe, additional_info, updated_at
+         FROM payment_settings WHERE id = ?`,
+        [existing[0].id]
+      );
+
+      return res.status(200).json({
+        data: { settings: updatedRows[0] },
+        message: 'Configuración de pago actualizada exitosamente',
+      });
+    } else {
+      // Insertar nuevo registro
+      const id = crypto.randomUUID();
+
+      await pool.query(
+        `INSERT INTO payment_settings
+           (id, bank_name, account_holder, account_number, clabe, additional_info, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+        [
+          id,
+          bank_name || null,
+          account_holder || null,
+          account_number || null,
+          clabe || null,
+          additional_info || null,
+        ]
+      );
+
+      const [insertedRows] = await pool.query(
+        `SELECT id, bank_name, account_holder, account_number,
+                clabe, additional_info, updated_at
+         FROM payment_settings WHERE id = ?`,
+        [id]
+      );
+
+      return res.status(200).json({
+        data: { settings: insertedRows[0] },
+        message: 'Configuración de pago guardada exitosamente',
+      });
     }
-
-    return res.status(200).json({
-      data: { settings: result.rows[0] },
-      message: 'Configuración de pago guardada exitosamente',
-    });
   } catch (error) {
     console.error('❌ Error en upsert payment_settings:', error.message);
     return res.status(500).json({

@@ -10,10 +10,10 @@ const pool = require('../config/db');
 
 // Columnas base de usuario (sin password_hash)
 const USER_COLS = `u.id, u.first_name, u.last_name, u.email, u.phone,
-                   u.role, u.is_active, u.created_at, u.updated_at`;
+                   u.\`role\`, u.is_active, u.created_at, u.updated_at`;
 
-// Perfil como objeto JSON anidado
-const PROFILE_OBJ = `json_build_object(
+// Perfil como objeto JSON anidado (MySQL equivalente usando JSON_OBJECT)
+const PROFILE_OBJ = `JSON_OBJECT(
   'id',                cp.id,
   'date_of_birth',     cp.date_of_birth,
   'allergies',         cp.allergies,
@@ -35,54 +35,58 @@ const getAll = async (req, res) => {
     const { search } = req.query;
 
     // WHERE dinámico
-    const conditions = ["u.role = 'client'", 'u.deleted_at IS NULL'];
+    const conditions = ["u.`role` = 'client'", 'u.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     if (req.user.role === 'therapist') {
       conditions.push(`u.id IN (
         SELECT DISTINCT r.client_id 
         FROM reservations r
-        WHERE r.therapist_id = $${paramIndex}
+        WHERE r.therapist_id = ?
         AND r.deleted_at IS NULL
         AND r.client_id IS NOT NULL
       )`);
       values.push(req.user.id);
-      paramIndex++;
     }
 
     if (search) {
       conditions.push(
-        `(u.first_name || ' ' || u.last_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`
+        `(CONCAT(u.first_name, ' ', u.last_name) LIKE ? OR u.email LIKE ?)`
       );
-      values.push(`%${search}%`);
-      paramIndex++;
+      values.push(`%${search}%`, `%${search}%`);
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM users u WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM users u WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros paginados
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT ${USER_COLS},
               ${PROFILE_OBJ}
        FROM users u
        LEFT JOIN client_profiles cp ON cp.user_id = u.id
        WHERE ${whereClause}
        ORDER BY u.created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
+    // Mapear booleanos y parsear profile JSON
+    const clients = dataRows.map(r => ({
+      ...r,
+      is_active: !!r.is_active,
+      profile: typeof r.profile === 'string' ? JSON.parse(r.profile) : r.profile,
+    }));
+
     return res.status(200).json({
       data: {
-        clients: dataResult.rows,
+        clients,
         pagination: {
           total,
           page,
@@ -117,49 +121,55 @@ const getById = async (req, res) => {
     }
 
     if (req.user.role === 'therapist') {
-      const resCheck = await pool.query(
-        `SELECT id FROM reservations WHERE client_id = $1 AND therapist_id = $2 AND deleted_at IS NULL`,
+      const [resCheck] = await pool.query(
+        `SELECT id FROM reservations WHERE client_id = ? AND therapist_id = ? AND deleted_at IS NULL`,
         [id, req.user.id]
       );
-      if (resCheck.rows.length === 0) {
+      if (resCheck.length === 0) {
         return res.status(403).json({
           error: 'No tienes acceso al expediente de este cliente',
         });
       }
     }
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT ${USER_COLS},
               ${PROFILE_OBJ}
        FROM users u
        LEFT JOIN client_profiles cp ON cp.user_id = u.id
-       WHERE u.id = $1 AND u.role = 'client' AND u.deleted_at IS NULL`,
+       WHERE u.id = ? AND u.\`role\` = 'client' AND u.deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Cliente no encontrado',
       });
     }
 
+    const clientRow = {
+      ...rows[0],
+      is_active: !!rows[0].is_active,
+      profile: typeof rows[0].profile === 'string' ? JSON.parse(rows[0].profile) : rows[0].profile,
+    };
+
     // Obtener historial de reservas del cliente
-    const historyResult = await pool.query(
+    const [historyRows] = await pool.query(
       `SELECT r.id, r.scheduled_at, r.status, r.notes,
               s.name AS service_name,
               w.name AS workshop_name
        FROM reservations r
        LEFT JOIN services s ON s.id = r.service_id
        LEFT JOIN workshops w ON w.id = r.workshop_id
-       WHERE r.client_id = $1 AND r.deleted_at IS NULL
+       WHERE r.client_id = ? AND r.deleted_at IS NULL
        ORDER BY r.scheduled_at DESC`,
       [id]
     );
 
     return res.status(200).json({
       data: {
-        client: result.rows[0],
-        reservation_history: historyResult.rows,
+        client: clientRow,
+        reservation_history: historyRows,
       },
       message: 'Cliente obtenido exitosamente',
     });
@@ -192,25 +202,21 @@ const updateProfile = async (req, res) => {
 
   const userSets = [];
   const userValues = [];
-  let userParam = 1;
 
   for (const field of userFields) {
     if (req.body[field] !== undefined) {
-      userSets.push(`${field} = $${userParam}`);
+      userSets.push(`${field} = ?`);
       userValues.push(req.body[field]);
-      userParam++;
     }
   }
 
   const profileSets = [];
   const profileValues = [];
-  let profileParam = 1;
 
   for (const field of profileFields) {
     if (req.body[field] !== undefined) {
-      profileSets.push(`${field} = $${profileParam}`);
+      profileSets.push(`${field} = ?`);
       profileValues.push(req.body[field]);
-      profileParam++;
     }
   }
 
@@ -220,19 +226,19 @@ const updateProfile = async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar si el email ya está en uso por otro usuario
     if (req.body.email) {
-      const emailCheck = await client.query(
-        "SELECT id FROM users WHERE email = $1 AND id != $2 AND deleted_at IS NULL",
+      const [emailCheck] = await conn.query(
+        "SELECT id FROM users WHERE email = ? AND id != ? AND deleted_at IS NULL",
         [req.body.email, id]
       );
-      if (emailCheck.rows.length > 0) {
-        await client.query('ROLLBACK');
+      if (emailCheck.length > 0) {
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'El correo electrónico ya está en uso por otra cuenta',
         });
@@ -240,13 +246,13 @@ const updateProfile = async (req, res) => {
     }
 
     // Verificar que el cliente existe
-    const existsCheck = await client.query(
-      "SELECT id FROM users WHERE id = $1 AND role = 'client' AND deleted_at IS NULL",
+    const [existsCheck] = await conn.query(
+      "SELECT id FROM users WHERE id = ? AND `role` = 'client' AND deleted_at IS NULL",
       [id]
     );
 
-    if (existsCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (existsCheck.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({
         error: 'Cliente no encontrado',
       });
@@ -257,8 +263,8 @@ const updateProfile = async (req, res) => {
       userSets.push('updated_at = NOW()');
       userValues.push(id);
 
-      await client.query(
-        `UPDATE users SET ${userSets.join(', ')} WHERE id = $${userParam}`,
+      await conn.query(
+        `UPDATE users SET ${userSets.join(', ')} WHERE id = ?`,
         userValues
       );
     }
@@ -268,36 +274,42 @@ const updateProfile = async (req, res) => {
       profileSets.push('updated_at = NOW()');
       profileValues.push(id);
 
-      await client.query(
-        `UPDATE client_profiles SET ${profileSets.join(', ')} WHERE user_id = $${profileParam}`,
+      await conn.query(
+        `UPDATE client_profiles SET ${profileSets.join(', ')} WHERE user_id = ?`,
         profileValues
       );
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Retornar el cliente actualizado con su perfil
-    const updatedResult = await pool.query(
+    const [updatedRows] = await pool.query(
       `SELECT ${USER_COLS},
               ${PROFILE_OBJ}
        FROM users u
        LEFT JOIN client_profiles cp ON cp.user_id = u.id
-       WHERE u.id = $1`,
+       WHERE u.id = ?`,
       [id]
     );
 
+    const client = {
+      ...updatedRows[0],
+      is_active: !!updatedRows[0].is_active,
+      profile: typeof updatedRows[0].profile === 'string' ? JSON.parse(updatedRows[0].profile) : updatedRows[0].profile,
+    };
+
     return res.status(200).json({
-      data: { client: updatedResult.rows[0] },
+      data: { client },
       message: 'Perfil actualizado exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en updateProfile clients:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -309,22 +321,29 @@ const deactivate = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE users
        SET is_active = FALSE, updated_at = NOW()
-       WHERE id = $1 AND role = 'client' AND deleted_at IS NULL
-       RETURNING id, first_name, last_name, email, is_active`,
+       WHERE id = ? AND \`role\` = 'client' AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Cliente no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, first_name, last_name, email, is_active FROM users WHERE id = ?`,
+      [id]
+    );
+
+    const client = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(200).json({
-      data: { client: result.rows[0] },
+      data: { client },
       message: 'Cliente desactivado exitosamente',
     });
   } catch (error) {
@@ -343,22 +362,29 @@ const activate = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE users
        SET is_active = TRUE, updated_at = NOW()
-       WHERE id = $1 AND role = 'client' AND deleted_at IS NULL
-       RETURNING id, first_name, last_name, email, is_active`,
+       WHERE id = ? AND \`role\` = 'client' AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Cliente no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, first_name, last_name, email, is_active FROM users WHERE id = ?`,
+      [id]
+    );
+
+    const client = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(200).json({
-      data: { client: result.rows[0] },
+      data: { client },
       message: 'Cliente activado exitosamente',
     });
   } catch (error) {
@@ -377,22 +403,21 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE users
        SET deleted_at = NOW()
-       WHERE id = $1 AND role = 'client' AND deleted_at IS NULL
-       RETURNING id`,
+       WHERE id = ? AND \`role\` = 'client' AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Cliente no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Cliente eliminado exitosamente',
     });
   } catch (error) {
@@ -421,22 +446,21 @@ const uploadPhoto = async (req, res) => {
     const photoUrl = req.file.path; // Cloudinary inyecta la URL aquí
 
     // Actualizar client_profiles
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE client_profiles
-       SET photo_url = $1, updated_at = NOW()
-       WHERE user_id = $2
-       RETURNING photo_url`,
+       SET photo_url = ?, updated_at = NOW()
+       WHERE user_id = ?`,
       [photoUrl, id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Perfil de cliente no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { photo_url: result.rows[0].photo_url },
+      data: { photo_url: photoUrl },
       message: 'Foto actualizada exitosamente',
     });
   } catch (error) {

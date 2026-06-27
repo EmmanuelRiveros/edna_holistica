@@ -49,15 +49,15 @@ app.use(express.json());
 // -----------------------------------------------------------
 // Ruta: GET /health
 // Verifica que el servidor está arriba Y que la conexión
-// a PostgreSQL funciona. Útil para monitoreo y despliegues.
+// a MySQL/MariaDB funciona. Útil para monitoreo y despliegues.
 // -----------------------------------------------------------
 app.get('/health', async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW() AS server_time');
+    const [rows] = await pool.query('SELECT NOW() AS server_time');
     res.status(200).json({
       status: 'ok',
       database: 'connected',
-      server_time: result.rows[0].server_time,
+      server_time: rows[0].server_time,
     });
   } catch (error) {
     console.error('❌ Health check falló:', error.message);

@@ -7,6 +7,7 @@
 //   Error: { error: "mensaje descriptivo" }
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -21,27 +22,30 @@ const getAll = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Total de registros (para paginador del frontend)
-    const countResult = await pool.query(
-      'SELECT COUNT(*) FROM services WHERE deleted_at IS NULL'
+    const [countResult] = await pool.query(
+      'SELECT COUNT(*) AS total FROM services WHERE deleted_at IS NULL'
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros de la página actual
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT id, name, description, benefits, duration_minutes,
-              buffer_minutes, price::FLOAT AS price, 
-              deposit_amount::FLOAT AS deposit_amount, is_active,
+              buffer_minutes, price, 
+              deposit_amount, is_active,
               created_at, updated_at
        FROM services
        WHERE deleted_at IS NULL
        ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
+       LIMIT ? OFFSET ?`,
       [limit, offset]
     );
 
+    // Mapear booleanos
+    const services = dataRows.map(r => ({ ...r, is_active: !!r.is_active }));
+
     return res.status(200).json({
       data: {
-        services: dataResult.rows,
+        services,
         pagination: {
           total,
           page,
@@ -67,24 +71,26 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, name, description, benefits, duration_minutes,
-              buffer_minutes, price::FLOAT AS price, 
-              deposit_amount::FLOAT AS deposit_amount, is_active,
+              buffer_minutes, price, 
+              deposit_amount, is_active,
               created_at, updated_at
        FROM services
-       WHERE id = $1 AND deleted_at IS NULL`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Servicio no encontrado',
       });
     }
 
+    const service = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(200).json({
-      data: { service: result.rows[0] },
+      data: { service },
       message: 'Servicio obtenido exitosamente',
     });
   } catch (error) {
@@ -111,14 +117,13 @@ const create = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO services (name, description, benefits, duration_minutes, buffer_minutes, price, deposit_amount, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, name, description, benefits, duration_minutes,
-                 buffer_minutes, price::FLOAT AS price, 
-                 deposit_amount::FLOAT AS deposit_amount, is_active,
-                 created_at, updated_at`,
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO services (id, name, description, benefits, duration_minutes, buffer_minutes, price, deposit_amount, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         name,
         description || null,
         benefits || null,
@@ -130,8 +135,20 @@ const create = async (req, res) => {
       ]
     );
 
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, benefits, duration_minutes,
+              buffer_minutes, price, 
+              deposit_amount, is_active,
+              created_at, updated_at
+       FROM services WHERE id = ?`,
+      [id]
+    );
+
+    const service = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(201).json({
-      data: { service: result.rows[0] },
+      data: { service },
       message: 'Servicio creado exitosamente',
     });
   } catch (error) {
@@ -156,13 +173,11 @@ const update = async (req, res) => {
 
     const setClauses = [];
     const values = [];
-    let paramIndex = 1;
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
-        setClauses.push(`${field} = $${paramIndex}`);
+        setClauses.push(`${field} = ?`);
         values.push(req.body[field]);
-        paramIndex++;
       }
     }
 
@@ -179,26 +194,33 @@ const update = async (req, res) => {
     // El ID es el último parámetro
     values.push(id);
 
-    const query = `
-      UPDATE services
-      SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex} AND deleted_at IS NULL
-      RETURNING id, name, description, benefits, duration_minutes,
-               buffer_minutes, price::FLOAT AS price, 
-               deposit_amount::FLOAT AS deposit_amount, is_active,
-               created_at, updated_at
-    `;
+    const [result] = await pool.query(
+      `UPDATE services
+       SET ${setClauses.join(', ')}
+       WHERE id = ? AND deleted_at IS NULL`,
+      values
+    );
 
-    const result = await pool.query(query, values);
-
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Servicio no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, benefits, duration_minutes,
+              buffer_minutes, price, 
+              deposit_amount, is_active,
+              created_at, updated_at
+       FROM services WHERE id = ?`,
+      [id]
+    );
+
+    const service = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(200).json({
-      data: { service: result.rows[0] },
+      data: { service },
       message: 'Servicio actualizado exitosamente',
     });
   } catch (error) {
@@ -217,22 +239,21 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE services
        SET deleted_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id, price::FLOAT AS price`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Servicio no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Servicio eliminado exitosamente',
     });
   } catch (error) {
@@ -252,20 +273,20 @@ const getTherapists = async (req, res) => {
     const { id } = req.params;
 
     // Verificar que el servicio existe
-    const service = await pool.query(
+    const [serviceRows] = await pool.query(
       `SELECT id, name FROM services 
-       WHERE id = $1 AND deleted_at IS NULL`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (service.rows.length === 0) {
+    if (serviceRows.length === 0) {
       return res.status(404).json({ 
         error: 'Servicio no encontrado' 
       });
     }
 
     // Obtener terapeutas asignados (therapist Y admin)
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT 
          u.id,
          u.first_name,
@@ -274,16 +295,16 @@ const getTherapists = async (req, res) => {
          u.phone
        FROM therapist_services ts
        JOIN users u ON u.id = ts.therapist_id
-       WHERE ts.service_id = $1
+       WHERE ts.service_id = ?
          AND u.deleted_at IS NULL
          AND u.is_active = TRUE
-         AND u.role IN ('therapist', 'admin')
+         AND u.\`role\` IN ('therapist', 'admin')
        ORDER BY u.first_name ASC`,
       [id]
     );
 
     return res.status(200).json({
-      data: { therapists: result.rows },
+      data: { therapists: rows },
       message: 'Terapeutas obtenidos exitosamente'
     });
   } catch (error) {

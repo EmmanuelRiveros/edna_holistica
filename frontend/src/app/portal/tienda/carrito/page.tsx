@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchAPI } from "@/lib/api";
 import { useCart } from "@/context/CartContext";
+import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
 import {
   Minus, Plus, Trash2, ShoppingBag, Leaf, Loader2,
   Tag, CheckCircle2, AlertCircle, MapPin, PlusCircle, Building, X
@@ -20,6 +21,7 @@ export default function CarritoPage() {
   const [couponInput, setCouponInput] = useState(couponCode);
   const [couponMsg, setCouponMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [validatingCoupon, setValidatingCoupon] = useState(false);
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
 
   const [notes, setNotes] = useState("");
 
@@ -80,9 +82,12 @@ export default function CarritoPage() {
     setCouponMsg(null);
 
     try {
+      const headers = getHeaders() || {};
       const res = await fetchAPI(
-        `/coupons/validate?code=${encodeURIComponent(couponInput.trim())}&total=${total}`
+        `/coupons/validate?code=${encodeURIComponent(couponInput.trim())}&total=${total}`,
+        { headers }
       );
+
       applyCoupon(couponInput.trim().toUpperCase(), res.data.discount_amount);
       setCouponMsg({
         type: "ok",
@@ -106,7 +111,7 @@ export default function CarritoPage() {
     }
 
     const newAddrObj = { ...newAddressForm };
-    
+
     if (newAddressForm.save_for_future) {
       const headers = getHeaders();
       if (!headers) {
@@ -123,7 +128,7 @@ export default function CarritoPage() {
           })
         });
         const savedAddr = res.data.address;
-        setAddresses([savedAddr, ...addresses.map(a => ({...a, is_default: false}))]);
+        setAddresses([savedAddr, ...addresses.map(a => ({ ...a, is_default: false }))]);
         setSelectedAddress(savedAddr);
         setIsNewAddressModalOpen(false);
         setNewAddressForm({
@@ -185,7 +190,7 @@ export default function CarritoPage() {
     setIsProcessing(true);
     try {
       const order = await createOrderRecord();
-      
+
       // Guardar info en localStorage y redirigir
       localStorage.setItem("pending_transfer", JSON.stringify({
         total: FINAL_TOTAL,
@@ -256,12 +261,12 @@ export default function CarritoPage() {
       <h1 className="text-2xl font-bold text-text-primary mb-6">Checkout</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
+
         {/* ==============================================================
             COLUMNA IZQUIERDA (2/3)
             ============================================================== */}
         <div className="lg:col-span-2 space-y-6">
-          
+
           {/* BLOQUE 1: Lista de Productos */}
           <div className="bg-surface rounded-xl border border-border/50 shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-border bg-background/50">
@@ -289,7 +294,7 @@ export default function CarritoPage() {
                   <div className="flex-1 min-w-0 pr-8">
                     <p className="font-medium text-text-primary text-sm sm:text-base mb-1 truncate">{item.product.name}</p>
                     <p className="text-xs text-text-secondary">${item.product.price.toFixed(2)} unitario</p>
-                    
+
                     <div className="flex items-center justify-between mt-3">
                       <div className="flex items-center gap-2">
                         <button
@@ -363,13 +368,13 @@ export default function CarritoPage() {
             COLUMNA DERECHA (1/3)
             ============================================================== */}
         <div className="lg:col-span-1 space-y-6">
-          
+
           {/* BLOQUE 2: Dirección (El Cupón fue movido a la izquierda) */}
           <div className="bg-surface rounded-xl border border-border/50 shadow-sm p-5">
             <h2 className="font-semibold text-text-primary mb-4 flex items-center gap-2">
               <MapPin size={18} className="text-primary" /> Dirección de Envío
             </h2>
-            
+
             {selectedAddress ? (
               <div className="space-y-3">
                 <div className="bg-background rounded-lg p-3 border border-border/50 text-sm">
@@ -394,7 +399,7 @@ export default function CarritoPage() {
                 <PlusCircle size={18} /> Agregar dirección de envío
               </button>
             )}
-            
+
             {!selectedAddress && (
               <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
                 <AlertCircle size={12} /> Agrega una dirección de envío
@@ -405,7 +410,7 @@ export default function CarritoPage() {
           {/* BLOQUE 3: Método de Pago */}
           <div className="bg-surface rounded-xl border border-border/50 shadow-sm p-5">
             <h2 className="font-semibold text-text-primary mb-4">Método de Pago</h2>
-            
+
             <div className="space-y-3">
               {/* PayPal */}
               <label className={`block border rounded-lg p-3 cursor-pointer transition-colors ${paymentMethod === 'paypal' ? 'border-primary bg-primary/5' : 'border-border hover:bg-background'}`}>
@@ -496,15 +501,46 @@ export default function CarritoPage() {
                   </button>
                 )}
 
-                {paymentMethod === 'paypal' && (
-                  <button
-                    onClick={handlePayPalCheckout}
-                    disabled={isProcessing}
-                    className="w-full rounded-lg bg-[#003087] py-3 font-semibold text-white hover:bg-[#001c56] transition-colors flex justify-center items-center gap-2 shadow-sm text-sm"
-                  >
-                    {isProcessing && <Loader2 size={16} className="animate-spin" />}
-                    Pagar con PayPal
-                  </button>
+                {paymentMethod === 'paypal' && process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID && (
+                  <div className="w-full mt-2">
+                    <PayPalScriptProvider options={{ "clientId": process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID, currency: "MXN" }}>
+                      <PayPalButtons
+                        style={{ layout: "vertical", color: "blue", shape: "rect", label: "pay" }}
+                        createOrder={async () => {
+                          try {
+                            const order = await createOrderRecord();
+                            const res = await fetchAPI("/checkout/paypal/create-order", {
+                              method: "POST",
+                              headers: getHeaders()!,
+                              body: JSON.stringify({ order_id: order.id }),
+                            });
+                            setPendingOrderId(order.id);
+                            return res.data.paypal_order_id;
+                          } catch (err) {
+                            alert(err instanceof Error ? err.message : "Error al iniciar PayPal");
+                            return "";
+                          }
+                        }}
+                        onApprove={async (data) => {
+                          setIsProcessing(true);
+                          try {
+                            const res = await fetchAPI("/checkout/paypal/capture", {
+                              method: "POST",
+                              headers: getHeaders()!,
+                              body: JSON.stringify({
+                                paypal_order_id: data.orderID,
+                                order_id: pendingOrderId,
+                              }),
+                            });
+                            router.push(`/portal/pago/exitoso?order_id=${pendingOrderId}`);
+                          } catch (err) {
+                            alert(err instanceof Error ? err.message : "Error al confirmar el pago");
+                            setIsProcessing(false);
+                          }
+                        }}
+                      />
+                    </PayPalScriptProvider>
+                  </div>
                 )}
               </>
             )}
@@ -515,7 +551,7 @@ export default function CarritoPage() {
       {/* ==============================================================
           MODALES
           ============================================================== */}
-          
+
       {/* Modal: Seleccionar Dirección */}
       {isAddressModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
@@ -526,17 +562,16 @@ export default function CarritoPage() {
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="space-y-3 mb-6">
               {addresses.map(addr => (
                 <div
                   key={addr.id}
                   onClick={() => setTempSelectedAddressId(addr.id)}
-                  className={`border rounded-xl p-4 cursor-pointer transition-all ${
-                    (tempSelectedAddressId || selectedAddress?.id) === addr.id 
-                      ? 'border-primary ring-1 ring-primary/20 bg-primary/5' 
+                  className={`border rounded-xl p-4 cursor-pointer transition-all ${(tempSelectedAddressId || selectedAddress?.id) === addr.id
+                      ? 'border-primary ring-1 ring-primary/20 bg-primary/5'
                       : 'border-border hover:border-text-muted'
-                  }`}
+                    }`}
                 >
                   <div className="flex justify-between items-start mb-1">
                     <p className="font-semibold text-text-primary">{addr.alias || 'Dirección'}</p>
@@ -562,7 +597,7 @@ export default function CarritoPage() {
               <button onClick={() => setIsAddressModalOpen(false)} className="flex-1 py-2.5 rounded-lg border border-border text-sm font-medium text-text-secondary hover:bg-background">
                 Cancelar
               </button>
-              <button 
+              <button
                 onClick={() => {
                   const sel = addresses.find(a => a.id === (tempSelectedAddressId || selectedAddress?.id));
                   if (sel) setSelectedAddress(sel);
@@ -582,50 +617,50 @@ export default function CarritoPage() {
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-surface rounded-xl shadow-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-bold text-text-primary mb-4">Nueva Dirección de Envío</h3>
-            
+
             <div className="space-y-4 text-sm">
               <div>
                 <label className="block text-text-secondary font-medium mb-1">Nombre del destinatario *</label>
-                <input type="text" value={newAddressForm.recipient_name} onChange={e => setNewAddressForm({...newAddressForm, recipient_name: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                <input type="text" value={newAddressForm.recipient_name} onChange={e => setNewAddressForm({ ...newAddressForm, recipient_name: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Calle y Número *</label>
-                  <input type="text" value={newAddressForm.street} onChange={e => setNewAddressForm({...newAddressForm, street: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.street} onChange={e => setNewAddressForm({ ...newAddressForm, street: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Colonia</label>
-                  <input type="text" value={newAddressForm.neighborhood} onChange={e => setNewAddressForm({...newAddressForm, neighborhood: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.neighborhood} onChange={e => setNewAddressForm({ ...newAddressForm, neighborhood: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Ciudad *</label>
-                  <input type="text" value={newAddressForm.city} onChange={e => setNewAddressForm({...newAddressForm, city: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.city} onChange={e => setNewAddressForm({ ...newAddressForm, city: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Estado *</label>
-                  <input type="text" value={newAddressForm.state} onChange={e => setNewAddressForm({...newAddressForm, state: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.state} onChange={e => setNewAddressForm({ ...newAddressForm, state: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Código Postal</label>
-                  <input type="text" value={newAddressForm.postal_code} onChange={e => setNewAddressForm({...newAddressForm, postal_code: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.postal_code} onChange={e => setNewAddressForm({ ...newAddressForm, postal_code: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Teléfono</label>
-                  <input type="text" value={newAddressForm.contact_phone} onChange={e => setNewAddressForm({...newAddressForm, contact_phone: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.contact_phone} onChange={e => setNewAddressForm({ ...newAddressForm, contact_phone: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
               </div>
               <div>
                 <label className="block text-text-secondary font-medium mb-1">Referencias</label>
-                <textarea rows={2} value={newAddressForm.references} onChange={e => setNewAddressForm({...newAddressForm, references: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none resize-none" />
+                <textarea rows={2} value={newAddressForm.references} onChange={e => setNewAddressForm({ ...newAddressForm, references: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none resize-none" />
               </div>
-              
+
               <div className="pt-2">
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-text-primary">
-                  <input type="checkbox" checked={newAddressForm.save_for_future} onChange={e => setNewAddressForm({...newAddressForm, save_for_future: e.target.checked})} className="rounded text-primary focus:ring-primary" />
+                  <input type="checkbox" checked={newAddressForm.save_for_future} onChange={e => setNewAddressForm({ ...newAddressForm, save_for_future: e.target.checked })} className="rounded text-primary focus:ring-primary" />
                   Guardar dirección para futuras compras
                 </label>
               </div>
@@ -633,7 +668,7 @@ export default function CarritoPage() {
               {newAddressForm.save_for_future && (
                 <div>
                   <label className="block text-text-secondary font-medium mb-1">Alias (Ej. Casa, Trabajo)</label>
-                  <input type="text" value={newAddressForm.alias} onChange={e => setNewAddressForm({...newAddressForm, alias: e.target.value})} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
+                  <input type="text" value={newAddressForm.alias} onChange={e => setNewAddressForm({ ...newAddressForm, alias: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary/30 outline-none" />
                 </div>
               )}
             </div>
@@ -642,7 +677,7 @@ export default function CarritoPage() {
               <button onClick={() => setIsNewAddressModalOpen(false)} className="flex-1 py-2.5 rounded-lg border border-border text-sm font-medium text-text-secondary hover:bg-background">
                 Cancelar
               </button>
-              <button 
+              <button
                 onClick={handleSaveNewAddress}
                 disabled={isProcessing}
                 className="flex-[2] py-2.5 flex items-center justify-center gap-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-60"

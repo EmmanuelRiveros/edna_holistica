@@ -4,6 +4,7 @@
 // Funciones: getAll, create, update, validate, remove
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -12,9 +13,9 @@ const pool = require('../config/db');
 // -----------------------------------------------------------
 const getAll = async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, code, discount_type, discount_value,
-              min_purchase::FLOAT AS min_purchase,
+              min_purchase,
               max_uses, used_count, expires_at, is_active,
               created_at, updated_at,
               CASE
@@ -27,8 +28,11 @@ const getAll = async (req, res) => {
        ORDER BY created_at DESC`
     );
 
+    // Mapear booleanos
+    const coupons = rows.map(r => ({ ...r, is_active: !!r.is_active }));
+
     return res.status(200).json({
-      data: { coupons: result.rows },
+      data: { coupons },
       message: 'Cupones obtenidos exitosamente',
     });
   } catch (error) {
@@ -76,26 +80,25 @@ const create = async (req, res) => {
     }
 
     // Verificar que el código no exista
-    const existsCheck = await pool.query(
-      'SELECT id FROM coupons WHERE code = UPPER($1)',
+    const [existsCheck] = await pool.query(
+      'SELECT id FROM coupons WHERE code = UPPER(?)',
       [code]
     );
 
-    if (existsCheck.rows.length > 0) {
+    if (existsCheck.length > 0) {
       return res.status(400).json({
         error: 'Ya existe un cupón con este código',
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO coupons (code, discount_type, discount_value,
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO coupons (id, code, discount_type, discount_value,
                             min_purchase, max_uses, expires_at)
-       VALUES (UPPER($1), $2, $3, $4, $5, $6)
-       RETURNING id, code, discount_type, discount_value,
-                 min_purchase::FLOAT AS min_purchase,
-                 max_uses, used_count, expires_at, is_active,
-                 created_at, updated_at`,
+       VALUES (?, UPPER(?), ?, ?, ?, ?, ?)`,
       [
+        id,
         code,
         discount_type,
         discount_value,
@@ -105,8 +108,20 @@ const create = async (req, res) => {
       ]
     );
 
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, code, discount_type, discount_value,
+              min_purchase,
+              max_uses, used_count, expires_at, is_active,
+              created_at, updated_at
+       FROM coupons WHERE id = ?`,
+      [id]
+    );
+
+    const coupon = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(201).json({
-      data: { coupon: result.rows[0] },
+      data: { coupon },
       message: 'Cupón creado exitosamente',
     });
   } catch (error) {
@@ -133,13 +148,11 @@ const update = async (req, res) => {
 
     const setClauses = [];
     const values = [];
-    let paramIndex = 1;
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
-        setClauses.push(`${field} = $${paramIndex}`);
+        setClauses.push(`${field} = ?`);
         values.push(req.body[field]);
-        paramIndex++;
       }
     }
 
@@ -152,25 +165,33 @@ const update = async (req, res) => {
     setClauses.push('updated_at = NOW()');
     values.push(id);
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE coupons
        SET ${setClauses.join(', ')}
-       WHERE id = $${paramIndex}
-       RETURNING id, code, discount_type, discount_value,
-                 min_purchase::FLOAT AS min_purchase,
-                 max_uses, used_count, expires_at, is_active,
-                 created_at, updated_at`,
+       WHERE id = ?`,
       values
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Cupón no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, code, discount_type, discount_value,
+              min_purchase,
+              max_uses, used_count, expires_at, is_active,
+              created_at, updated_at
+       FROM coupons WHERE id = ?`,
+      [id]
+    );
+
+    const coupon = { ...rows[0], is_active: !!rows[0].is_active };
+
     return res.status(200).json({
-      data: { coupon: result.rows[0] },
+      data: { coupon },
       message: 'Cupón actualizado exitosamente',
     });
   } catch (error) {
@@ -195,22 +216,22 @@ const validate = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, code, discount_type, discount_value,
-              min_purchase::FLOAT AS min_purchase,
+              min_purchase,
               max_uses, used_count, expires_at, is_active
        FROM coupons
-       WHERE code = UPPER($1)`,
+       WHERE code = UPPER(?)`,
       [code]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Cupón no encontrado',
       });
     }
 
-    const coupon = result.rows[0];
+    const coupon = { ...rows[0], is_active: !!rows[0].is_active };
 
     // Verificar activo
     if (!coupon.is_active) {
@@ -279,22 +300,27 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      `UPDATE coupons
-       SET is_active = FALSE, updated_at = NOW()
-       WHERE id = $1
-       RETURNING id, code`,
+    // Primero verificar que existe
+    const [existing] = await pool.query(
+      `SELECT id, code FROM coupons WHERE id = ?`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (existing.length === 0) {
       return res.status(404).json({
         error: 'Cupón no encontrado',
       });
     }
 
+    await pool.query(
+      `UPDATE coupons
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { id: result.rows[0].id, code: result.rows[0].code },
+      data: { id: existing[0].id, code: existing[0].code },
       message: 'Cupón desactivado exitosamente',
     });
   } catch (error) {

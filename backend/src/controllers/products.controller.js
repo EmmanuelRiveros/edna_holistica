@@ -5,6 +5,7 @@
 // Maneja el catálogo de productos del ecommerce.
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -23,35 +24,32 @@ const getAll = async (req, res) => {
     // WHERE dinámico
     const conditions = ['p.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     if (category_id) {
-      conditions.push(`p.category_id = $${paramIndex}`);
+      conditions.push(`p.category_id = ?`);
       values.push(category_id);
-      paramIndex++;
     }
 
     if (search) {
       conditions.push(
-        `(p.name ILIKE $${paramIndex} OR p.description ILIKE $${paramIndex})`
+        `(p.name LIKE ? OR p.description LIKE ?)`
       );
-      values.push(`%${search}%`);
-      paramIndex++;
+      values.push(`%${search}%`, `%${search}%`);
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM products p WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM products p WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros paginados
-    const dataResult = await pool.query(
-      `SELECT p.id, p.name, p.description, p.price::FLOAT AS price,
-              p.stock::INTEGER AS stock, p.image_urls, p.is_active,
+    const [dataRows] = await pool.query(
+      `SELECT p.id, p.name, p.description, p.price,
+              p.stock, p.image_urls, p.is_active,
               p.allows_shipping, p.allows_pickup,
               p.category_id, c.name AS category_name,
               p.created_at, p.updated_at
@@ -59,13 +57,21 @@ const getAll = async (req, res) => {
        LEFT JOIN product_categories c ON c.id = p.category_id
        WHERE ${whereClause}
        ORDER BY p.created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
+    // Mapear booleanos
+    const products = dataRows.map(r => ({
+      ...r,
+      is_active: !!r.is_active,
+      allows_shipping: !!r.allows_shipping,
+      allows_pickup: !!r.allows_pickup,
+    }));
+
     return res.status(200).json({
       data: {
-        products: dataResult.rows,
+        products,
         pagination: {
           total,
           page,
@@ -92,26 +98,33 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT p.id, p.name, p.description, p.price::FLOAT AS price,
-              p.stock::INTEGER AS stock, p.image_urls, p.is_active,
+    const [rows] = await pool.query(
+      `SELECT p.id, p.name, p.description, p.price,
+              p.stock, p.image_urls, p.is_active,
               p.allows_shipping, p.allows_pickup,
               p.category_id, c.name AS category_name,
               p.created_at, p.updated_at
        FROM products p
        LEFT JOIN product_categories c ON c.id = p.category_id
-       WHERE p.id = $1 AND p.deleted_at IS NULL`,
+       WHERE p.id = ? AND p.deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Producto no encontrado',
       });
     }
 
+    const product = {
+      ...rows[0],
+      is_active: !!rows[0].is_active,
+      allows_shipping: !!rows[0].allows_shipping,
+      allows_pickup: !!rows[0].allows_pickup,
+    };
+
     return res.status(200).json({
-      data: { product: result.rows[0] },
+      data: { product },
       message: 'Producto obtenido exitosamente',
     });
   } catch (error) {
@@ -140,28 +153,44 @@ const create = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO products (name, description, price, stock, category_id,
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO products (id, name, description, price, stock, category_id,
                              image_urls, allows_shipping, allows_pickup)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, name, description, price::FLOAT AS price,
-                 stock::INTEGER AS stock, image_urls, is_active,
-                 allows_shipping, allows_pickup,
-                 category_id, created_at, updated_at`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         name,
         description || null,
         price,
         stock,
         category_id || null,
-        image_urls || null,
+        image_urls ? JSON.stringify(image_urls) : null,
         allows_shipping !== undefined ? allows_shipping : true,
         allows_pickup !== undefined ? allows_pickup : true,
       ]
     );
 
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, price,
+              stock, image_urls, is_active,
+              allows_shipping, allows_pickup,
+              category_id, created_at, updated_at
+       FROM products WHERE id = ?`,
+      [id]
+    );
+
+    const product = {
+      ...rows[0],
+      is_active: !!rows[0].is_active,
+      allows_shipping: !!rows[0].allows_shipping,
+      allows_pickup: !!rows[0].allows_pickup,
+    };
+
     return res.status(201).json({
-      data: { product: result.rows[0] },
+      data: { product },
       message: 'Producto creado exitosamente',
     });
   } catch (error) {
@@ -188,13 +217,15 @@ const update = async (req, res) => {
 
     const setClauses = [];
     const values = [];
-    let paramIndex = 1;
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
-        setClauses.push(`${field} = $${paramIndex}`);
-        values.push(req.body[field]);
-        paramIndex++;
+        setClauses.push(`${field} = ?`);
+        if (field === 'image_urls') {
+          values.push(JSON.stringify(req.body[field]));
+        } else {
+          values.push(req.body[field]);
+        }
       }
     }
 
@@ -207,25 +238,38 @@ const update = async (req, res) => {
     setClauses.push('updated_at = NOW()');
     values.push(id);
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE products
        SET ${setClauses.join(', ')}
-       WHERE id = $${paramIndex} AND deleted_at IS NULL
-       RETURNING id, name, description, price::FLOAT AS price,
-                 stock::INTEGER AS stock, image_urls, is_active,
-                 allows_shipping, allows_pickup,
-                 category_id, created_at, updated_at`,
+       WHERE id = ? AND deleted_at IS NULL`,
       values
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Producto no encontrado',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, price,
+              stock, image_urls, is_active,
+              allows_shipping, allows_pickup,
+              category_id, created_at, updated_at
+       FROM products WHERE id = ?`,
+      [id]
+    );
+
+    const product = {
+      ...rows[0],
+      is_active: !!rows[0].is_active,
+      allows_shipping: !!rows[0].allows_shipping,
+      allows_pickup: !!rows[0].allows_pickup,
+    };
+
     return res.status(200).json({
-      data: { product: result.rows[0] },
+      data: { product },
       message: 'Producto actualizado exitosamente',
     });
   } catch (error) {
@@ -260,18 +304,18 @@ const updateStock = async (req, res) => {
     }
 
     // Verificar que el producto existe
-    const current = await pool.query(
-      'SELECT id, stock FROM products WHERE id = $1 AND deleted_at IS NULL',
+    const [current] = await pool.query(
+      'SELECT id, stock FROM products WHERE id = ? AND deleted_at IS NULL',
       [id]
     );
 
-    if (current.rows.length === 0) {
+    if (current.length === 0) {
       return res.status(404).json({
         error: 'Producto no encontrado',
       });
     }
 
-    const currentStock = current.rows[0].stock;
+    const currentStock = current[0].stock;
 
     // Calcular nuevo stock según operación
     let newStock;
@@ -289,16 +333,21 @@ const updateStock = async (req, res) => {
       newStock = quantity;
     }
 
-    const result = await pool.query(
+    await pool.query(
       `UPDATE products
-       SET stock = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id, name, stock::INTEGER AS stock`,
+       SET stock = ?, updated_at = NOW()
+       WHERE id = ? AND deleted_at IS NULL`,
       [newStock, id]
     );
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, name, stock FROM products WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { product: result.rows[0] },
+      data: { product: rows[0] },
       message: 'Stock actualizado exitosamente',
     });
   } catch (error) {
@@ -317,22 +366,21 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE products
        SET deleted_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Producto no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Producto eliminado exitosamente',
     });
   } catch (error) {

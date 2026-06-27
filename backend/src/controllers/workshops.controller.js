@@ -8,7 +8,41 @@
 //   Error: { error: "mensaje descriptivo" }
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
+
+// -----------------------------------------------------------
+// Helper: obtiene un taller con sus instructores agrupados
+// En MySQL no hay json_agg FILTER, así que se hace con
+// una sub-query o bien con una segunda consulta.
+// -----------------------------------------------------------
+const fetchWorkshopWithInstructors = async (workshopId) => {
+  const [[workshopRows], [instructorRows]] = await Promise.all([
+    pool.query(
+      `SELECT id, name, description, type,
+              starts_at, duration_minutes, max_capacity,
+              price,
+              image_urls, status, created_at, updated_at
+       FROM workshops
+       WHERE id = ? AND deleted_at IS NULL`,
+      [workshopId]
+    ),
+    pool.query(
+      `SELECT u.id, u.first_name, u.last_name, u.email
+       FROM workshop_instructors wi
+       JOIN users u ON u.id = wi.instructor_id
+       WHERE wi.workshop_id = ?`,
+      [workshopId]
+    ),
+  ]);
+
+  if (workshopRows.length === 0) return null;
+
+  return {
+    ...workshopRows[0],
+    instructors: instructorRows,
+  };
+};
 
 // -----------------------------------------------------------
 // GET /api/v1/workshops
@@ -25,47 +59,44 @@ const getAll = async (req, res) => {
     // Construir WHERE dinámico
     const conditions = ['workshops.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     let therapistJoin = '';
     if (req.user?.role === 'therapist') {
       therapistJoin = 'JOIN workshop_instructors wi ON wi.workshop_id = workshops.id';
-      conditions.push(`wi.instructor_id = $${paramIndex}`);
+      conditions.push(`wi.instructor_id = ?`);
       values.push(req.user?.id);
-      paramIndex++;
     }
 
     if (status) {
-      conditions.push(`workshops.status = $${paramIndex}`);
+      conditions.push(`workshops.status = ?`);
       values.push(status);
-      paramIndex++;
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Total de registros
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM workshops ${therapistJoin} WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM workshops ${therapistJoin} WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros de la página actual
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT workshops.id, name, description, type, starts_at,
-              duration_minutes, max_capacity, price::FLOAT AS price,
+              duration_minutes, max_capacity, price,
               image_urls, status, created_at, updated_at
        FROM workshops
        ${therapistJoin}
        WHERE ${whereClause}
        ORDER BY starts_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
     return res.status(200).json({
       data: {
-        workshops: dataResult.rows,
+        workshops: dataRows,
         pagination: {
           total,
           page,
@@ -85,46 +116,22 @@ const getAll = async (req, res) => {
 
 // -----------------------------------------------------------
 // GET /api/v1/workshops/:id
-// Retorna un taller por ID con sus instructores (LEFT JOIN).
-// Usa json_agg + json_build_object para devolver instructors
-// como array de objetos JSON en una sola fila.
+// Retorna un taller por ID con sus instructores.
 // -----------------------------------------------------------
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.duration_minutes, w.max_capacity,
-              w.price::FLOAT AS price,
-              w.image_urls, w.status, w.created_at, w.updated_at,
-              COALESCE(
-                json_agg(
-                  json_build_object(
-                    'id', u.id,
-                    'first_name', u.first_name,
-                    'last_name', u.last_name,
-                    'email', u.email
-                  )
-                ) FILTER (WHERE u.id IS NOT NULL),
-                '[]'
-              ) AS instructors
-       FROM workshops w
-       LEFT JOIN workshop_instructors wi ON wi.workshop_id = w.id
-       LEFT JOIN users u ON u.id = wi.instructor_id
-       WHERE w.id = $1 AND w.deleted_at IS NULL
-       GROUP BY w.id`,
-      [id]
-    );
+    const workshop = await fetchWorkshopWithInstructors(id);
 
-    if (result.rows.length === 0) {
+    if (!workshop) {
       return res.status(404).json({
         error: 'Taller no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { workshop: result.rows[0] },
+      data: { workshop },
       message: 'Taller obtenido exitosamente',
     });
   } catch (error) {
@@ -154,20 +161,20 @@ const create = async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Insertar taller
-    const workshopResult = await client.query(
-      `INSERT INTO workshops (name, description, type, starts_at, duration_minutes,
+    const workshopId = crypto.randomUUID();
+
+    await conn.query(
+      `INSERT INTO workshops (id, name, description, type, starts_at, duration_minutes,
                               max_capacity, price, image_urls, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::TEXT[], $9)
-       RETURNING id, name, description, type, starts_at, duration_minutes,
-                max_capacity, price::FLOAT AS price,
-                image_urls, status, created_at, updated_at`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        workshopId,
         name,
         description || null,
         type,
@@ -175,73 +182,49 @@ const create = async (req, res) => {
         duration_minutes || null,
         max_capacity,
         price,
-        image_urls || null,
+        image_urls ? JSON.stringify(image_urls) : null,
         status || 'draft',
       ]
     );
 
-    const newWorkshop = workshopResult.rows[0];
-
     // Insertar instructores si vienen en el body
     if (Array.isArray(instructor_ids) && instructor_ids.length > 0) {
       for (const instructorId of instructor_ids) {
-        await client.query(
+        await conn.query(
           `INSERT INTO workshop_instructors (workshop_id, instructor_id)
-           VALUES ($1, $2)`,
-          [newWorkshop.id, instructorId]
+           VALUES (?, ?)`,
+          [workshopId, instructorId]
         );
       }
     }
 
     if (req.user?.role === 'therapist') {
       if (!Array.isArray(instructor_ids) || !instructor_ids.includes(req.user?.id)) {
-        await client.query(
+        await conn.query(
           `INSERT INTO workshop_instructors (workshop_id, instructor_id)
-           VALUES ($1, $2)`,
-          [newWorkshop.id, req.user?.id]
+           VALUES (?, ?)`,
+          [workshopId, req.user?.id]
         );
       }
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Obtener el taller completo con sus instructores
-    const fullWorkshop = await pool.query(
-      `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.duration_minutes, w.max_capacity,
-              w.price::FLOAT AS price,
-              w.image_urls, w.status, w.created_at, w.updated_at,
-              COALESCE(
-                json_agg(
-                  json_build_object(
-                    'id', u.id,
-                    'first_name', u.first_name,
-                    'last_name', u.last_name,
-                    'email', u.email
-                  )
-                ) FILTER (WHERE u.id IS NOT NULL),
-                '[]'
-              ) AS instructors
-       FROM workshops w
-       LEFT JOIN workshop_instructors wi ON wi.workshop_id = w.id
-       LEFT JOIN users u ON u.id = wi.instructor_id
-       WHERE w.id = $1
-       GROUP BY w.id`,
-      [newWorkshop.id]
-    );
+    const fullWorkshop = await fetchWorkshopWithInstructors(workshopId);
 
     return res.status(201).json({
-      data: { workshop: fullWorkshop.rows[0] },
+      data: { workshop: fullWorkshop },
       message: 'Taller creado exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en create workshops:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -261,17 +244,15 @@ const update = async (req, res) => {
 
   const setClauses = [];
   const values = [];
-  let paramIndex = 1;
 
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
+      setClauses.push(`${field} = ?`);
       if (field === 'image_urls') {
-        setClauses.push(`${field} = $${paramIndex}::TEXT[]`);
+        values.push(JSON.stringify(req.body[field]));
       } else {
-        setClauses.push(`${field} = $${paramIndex}`);
+        values.push(req.body[field]);
       }
-      values.push(req.body[field]);
-      paramIndex++;
     }
   }
 
@@ -286,28 +267,28 @@ const update = async (req, res) => {
   }
 
   if (req.user?.role === 'therapist') {
-    const instructorCheck = await pool.query(
-      'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+    const [instructorCheck] = await pool.query(
+      'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = ? AND instructor_id = ?',
       [id, req.user?.id]
     );
-    if (instructorCheck.rows.length === 0) {
+    if (instructorCheck.length === 0) {
       return res.status(403).json({ error: 'No tienes permisos para modificar este taller' });
     }
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar que el taller existe
-    const existsCheck = await client.query(
-      'SELECT id FROM workshops WHERE id = $1 AND deleted_at IS NULL',
+    const [existsCheck] = await conn.query(
+      'SELECT id FROM workshops WHERE id = ? AND deleted_at IS NULL',
       [id]
     );
 
-    if (existsCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (existsCheck.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({
         error: 'Taller no encontrado',
       });
@@ -318,17 +299,16 @@ const update = async (req, res) => {
       setClauses.push('updated_at = NOW()');
       values.push(id);
 
-      const query = `
-        UPDATE workshops
-        SET ${setClauses.join(', ')}
-        WHERE id = $${paramIndex} AND deleted_at IS NULL
-      `;
-
-      await client.query(query, values);
+      await conn.query(
+        `UPDATE workshops
+         SET ${setClauses.join(', ')}
+         WHERE id = ? AND deleted_at IS NULL`,
+        values
+      );
     } else {
       // Si solo actualizan instructores, igualmente tocar updated_at
-      await client.query(
-        'UPDATE workshops SET updated_at = NOW() WHERE id = $1',
+      await conn.query(
+        'UPDATE workshops SET updated_at = NOW() WHERE id = ?',
         [id]
       );
     }
@@ -336,8 +316,8 @@ const update = async (req, res) => {
     // Reemplazar instructores si vienen en el body
     if (hasInstructorUpdates) {
       // Borrar instructores actuales
-      await client.query(
-        'DELETE FROM workshop_instructors WHERE workshop_id = $1',
+      await conn.query(
+        'DELETE FROM workshop_instructors WHERE workshop_id = ?',
         [id]
       );
 
@@ -345,54 +325,32 @@ const update = async (req, res) => {
       const instructorIds = req.body.instructor_ids;
       if (Array.isArray(instructorIds)) {
         for (const instructorId of instructorIds) {
-          await client.query(
+          await conn.query(
             `INSERT INTO workshop_instructors (workshop_id, instructor_id)
-             VALUES ($1, $2)`,
+             VALUES (?, ?)`,
             [id, instructorId]
           );
         }
       }
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Obtener el taller actualizado con instructores
-    const updatedResult = await pool.query(
-      `SELECT w.id, w.name, w.description, w.type,
-              w.starts_at, w.duration_minutes, w.max_capacity,
-              w.price::FLOAT AS price,
-              w.image_urls, w.status, w.created_at, w.updated_at,
-              COALESCE(
-                json_agg(
-                  json_build_object(
-                    'id', u.id,
-                    'first_name', u.first_name,
-                    'last_name', u.last_name,
-                    'email', u.email
-                  )
-                ) FILTER (WHERE u.id IS NOT NULL),
-                '[]'
-              ) AS instructors
-       FROM workshops w
-       LEFT JOIN workshop_instructors wi ON wi.workshop_id = w.id
-       LEFT JOIN users u ON u.id = wi.instructor_id
-       WHERE w.id = $1
-       GROUP BY w.id`,
-      [id]
-    );
+    const updatedWorkshop = await fetchWorkshopWithInstructors(id);
 
     return res.status(200).json({
-      data: { workshop: updatedResult.rows[0] },
+      data: { workshop: updatedWorkshop },
       message: 'Taller actualizado exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en update workshops:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -405,31 +363,30 @@ const remove = async (req, res) => {
     const { id } = req.params;
 
     if (req.user?.role === 'therapist') {
-      const instructorCheck = await pool.query(
-        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+      const [instructorCheck] = await pool.query(
+        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = ? AND instructor_id = ?',
         [id, req.user?.id]
       );
-      if (instructorCheck.rows.length === 0) {
+      if (instructorCheck.length === 0) {
         return res.status(403).json({ error: 'No tienes permisos para eliminar este taller' });
       }
     }
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE workshops
        SET deleted_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Taller no encontrado',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Taller eliminado exitosamente',
     });
   } catch (error) {
@@ -467,29 +424,29 @@ const reschedule = async (req, res) => {
     }
 
     // Buscar el taller
-    const current = await pool.query(
-      `SELECT id, status FROM workshops WHERE id = $1 AND deleted_at IS NULL`,
+    const [current] = await pool.query(
+      `SELECT id, status FROM workshops WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (current.rows.length === 0) {
+    if (current.length === 0) {
       return res.status(404).json({
         error: 'Taller no encontrado',
       });
     }
 
     if (req.user?.role === 'therapist') {
-      const instructorCheck = await pool.query(
-        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = $1 AND instructor_id = $2',
+      const [instructorCheck] = await pool.query(
+        'SELECT instructor_id FROM workshop_instructors WHERE workshop_id = ? AND instructor_id = ?',
         [id, req.user?.id]
       );
-      if (instructorCheck.rows.length === 0) {
+      if (instructorCheck.length === 0) {
         return res.status(403).json({ error: 'No tienes permisos para reprogramar este taller' });
       }
     }
 
     // Regla de negocio: no reprogramar si cancelado o finalizado
-    const { status } = current.rows[0];
+    const { status } = current[0];
     if (status === 'cancelled' || status === 'finished') {
       return res.status(400).json({
         error: 'No se puede reprogramar un taller cancelado o finalizado',
@@ -497,18 +454,24 @@ const reschedule = async (req, res) => {
     }
 
     // Actualizar fecha
-    const result = await pool.query(
+    await pool.query(
       `UPDATE workshops
-       SET starts_at = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id, name, description, type, starts_at, duration_minutes,
-                max_capacity, price::FLOAT AS price,
-                image_urls, status, created_at, updated_at`,
+       SET starts_at = ?, updated_at = NOW()
+       WHERE id = ? AND deleted_at IS NULL`,
       [parsedStart.toISOString(), id]
     );
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, name, description, type, starts_at, duration_minutes,
+              max_capacity, price,
+              image_urls, status, created_at, updated_at
+       FROM workshops WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { workshop: result.rows[0] },
+      data: { workshop: rows[0] },
       message: 'Taller reprogramado exitosamente',
     });
   } catch (error) {

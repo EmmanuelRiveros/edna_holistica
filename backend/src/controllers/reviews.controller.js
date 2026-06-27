@@ -4,6 +4,7 @@
 // Funciones: getByProduct, getAll, create, moderate, delete
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -17,31 +18,31 @@ const getByProduct = async (req, res) => {
 
   try {
     // Obtener promedio y conteo total
-    const statsResult = await pool.query(
-      `SELECT AVG(rating)::FLOAT AS average_rating,
-              COUNT(*)::INTEGER AS total_reviews
+    const [statsRows] = await pool.query(
+      `SELECT AVG(rating) AS average_rating,
+              COUNT(*) AS total_reviews
        FROM product_reviews
-       WHERE product_id = $1 AND status = 'approved'`,
+       WHERE product_id = ? AND status = 'approved'`,
       [id]
     );
 
-    const stats = statsResult.rows[0];
+    const stats = statsRows[0];
 
     // Obtener las reseñas paginadas
-    const reviewsResult = await pool.query(
-      `SELECT pr.id, pr.rating::INTEGER, pr.comment, pr.created_at,
+    const [reviewsRows] = await pool.query(
+      `SELECT pr.id, pr.rating, pr.comment, pr.created_at,
               u.first_name, u.last_name
        FROM product_reviews pr
        LEFT JOIN users u ON u.id = pr.client_id
-       WHERE pr.product_id = $1 AND pr.status = 'approved'
+       WHERE pr.product_id = ? AND pr.status = 'approved'
        ORDER BY pr.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [id, limit, offset]
+       LIMIT ? OFFSET ?`,
+      [id, parseInt(limit, 10), parseInt(offset, 10)]
     );
 
     return res.status(200).json({
       data: {
-        reviews: reviewsResult.rows,
+        reviews: reviewsRows,
         average_rating: stats.average_rating || 0,
         total_reviews: stats.total_reviews || 0,
         page: parseInt(page, 10),
@@ -68,49 +69,44 @@ const getAll = async (req, res) => {
     const parsedLimit = parseInt(limit, 10) || 10;
     const parsedOffset = parseInt(offset, 10) || 0;
 
-    // Arrays independientes para cada consulta
-    const reviewsParams = [parsedLimit, parsedOffset];
+    // 2. Construir WHERE dinámico
+    let whereClause = '';
     const countParams = [];
+    const reviewsParams = [];
 
-    let reviewsWhereClause = '';
-    let countWhereClause = '';
-
-    // 2. Si hay status, armamos las cláusulas dinámicas para cada caso
     if (status) {
-      // Para el conteo, el status será el primer parámetro ($1)
-      countWhereClause = 'WHERE pr.status = $1';
+      whereClause = 'WHERE pr.status = ?';
       countParams.push(status);
-
-      // Para las reseñas, el status será el tercer parámetro ($3)
-      reviewsWhereClause = 'WHERE pr.status = $3';
       reviewsParams.push(status);
     }
 
-    // 3. Ejecutamos el conteo con su propia configuración limpia
-    const countQuery = `SELECT COUNT(*)::INTEGER FROM product_reviews pr ${countWhereClause}`;
-    const totalResult = await pool.query(countQuery, countParams);
-    const total = totalResult.rows[0].count;
+    // 3. Ejecutamos el conteo
+    const [totalResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM product_reviews pr ${whereClause}`,
+      countParams
+    );
+    const total = totalResult[0].total;
 
     // 4. Ejecutamos la búsqueda principal de reseñas
-    const reviewsQuery = `
-      SELECT pr.id, pr.rating::INTEGER, pr.comment, pr.status, pr.created_at,
+    const [reviewsRows] = await pool.query(
+      `SELECT pr.id, pr.rating, pr.comment, pr.status, pr.created_at,
              u.first_name, u.last_name,
              p.name AS product_name
       FROM product_reviews pr
       LEFT JOIN users u ON u.id = pr.client_id
       LEFT JOIN products p ON p.id = pr.product_id
-      ${reviewsWhereClause}
+      ${whereClause}
       ORDER BY pr.created_at DESC
-      LIMIT $1 OFFSET $2
-    `;
-    const reviewsResult = await pool.query(reviewsQuery, reviewsParams);
+      LIMIT ? OFFSET ?`,
+      [...reviewsParams, parsedLimit, parsedOffset]
+    );
 
-    // 5. Retornamos la respuesta (usando las variables ya parseadas)
+    // 5. Retornamos la respuesta
     return res.status(200).json({
       data: {
-        reviews: reviewsResult.rows,
+        reviews: reviewsRows,
         total,
-        page: parseInt(page, 10) || 1, // Por si page también viene vacío
+        page: parseInt(page, 10) || 1,
         limit: parsedLimit,
         totalPages: Math.ceil(total / parsedLimit),
       },
@@ -139,62 +135,70 @@ const create = async (req, res) => {
     return res.status(400).json({ error: 'El rating debe estar entre 1 y 5' });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // 1. Verificar que la orden existe, pertenece al cliente y está entregada
-    const orderCheck = await client.query(
+    const [orderCheck] = await conn.query(
       `SELECT id FROM orders 
-       WHERE id = $1 AND client_id = $2 AND status = 'delivered'`,
+       WHERE id = ? AND client_id = ? AND status = 'delivered'`,
       [order_id, client_id]
     );
 
-    if (orderCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (orderCheck.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(400).json({ error: 'Solo puedes reseñar productos de órdenes entregadas' });
     }
 
     // 2. Verificar que el producto está en la orden
-    const itemCheck = await client.query(
+    const [itemCheck] = await conn.query(
       `SELECT id FROM order_items 
-       WHERE order_id = $1 AND product_id = $2`,
+       WHERE order_id = ? AND product_id = ?`,
       [order_id, product_id]
     );
 
-    if (itemCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (itemCheck.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(400).json({ error: 'Este producto no está en la orden especificada' });
     }
 
     // 3. Insertar reseña (el error de duplicado se captura en el catch)
-    const result = await client.query(
+    const reviewId = crypto.randomUUID();
+
+    await conn.query(
       `INSERT INTO product_reviews 
-       (product_id, client_id, order_id, rating, comment, status)
-       VALUES ($1, $2, $3, $4, $5, 'pending')
-       RETURNING id, rating::INTEGER, comment, status, created_at`,
-      [product_id, client_id, order_id, rating, comment || null]
+       (id, product_id, client_id, order_id, rating, comment, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+      [reviewId, product_id, client_id, order_id, rating, comment || null]
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
+
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, rating, comment, status, created_at
+       FROM product_reviews WHERE id = ?`,
+      [reviewId]
+    );
 
     return res.status(201).json({
-      data: { review: result.rows[0] },
+      data: { review: rows[0] },
       message: 'Reseña enviada exitosamente. Pendiente de moderación.',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
 
-    // Capturar error 23505: Unique violation de PostgreSQL
-    if (error.code === '23505') {
+    // Capturar error de clave duplicada en MySQL (código ER_DUP_ENTRY)
+    if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
       return res.status(400).json({ error: 'Ya dejaste una reseña para este producto en esta orden' });
     }
 
     console.error('❌ Error en create review:', error.message);
     return res.status(500).json({ error: 'Error interno del servidor' });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -211,20 +215,25 @@ const moderate = async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE product_reviews
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING id, status`,
+       SET status = ?, updated_at = NOW()
+       WHERE id = ?`,
       [status, id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Reseña no encontrada' });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, status FROM product_reviews WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { review: result.rows[0] },
+      data: { review: rows[0] },
       message: `Reseña ${status === 'approved' ? 'aprobada' : 'rechazada'} exitosamente`,
     });
   } catch (error) {
@@ -241,14 +250,13 @@ const remove = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const result = await pool.query(
+    const [result] = await pool.query(
       `DELETE FROM product_reviews
-       WHERE id = $1
-       RETURNING id`,
+       WHERE id = ?`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Reseña no encontrada' });
     }
 

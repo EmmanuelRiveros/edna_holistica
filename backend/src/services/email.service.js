@@ -4,7 +4,7 @@ const pool = require('../config/db');
 
 // Helper para construir datos completos de la reserva
 const buildReservationData = async (reservationId) => {
-  const result = await pool.query(
+  const [rows] = await pool.query(
     `SELECT 
        r.id, r.scheduled_at, r.status,
        u.first_name AS client_first_name,
@@ -21,15 +21,15 @@ const buildReservationData = async (reservationId) => {
      LEFT JOIN users t ON t.id = r.therapist_id
      LEFT JOIN services s ON s.id = r.service_id
      LEFT JOIN workshops w ON w.id = r.workshop_id
-     WHERE r.id = $1`,
+     WHERE r.id = ?`,
     [reservationId]
   );
 
-  if (result.rows.length === 0) {
+  if (rows.length === 0) {
     throw new Error('Reserva no encontrada');
   }
 
-  const row = result.rows[0];
+  const row = rows[0];
   const isVirtual = row.workshop_type === 'virtual';
 
   return {

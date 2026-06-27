@@ -13,12 +13,12 @@ const pool = require('../config/db');
 // Reutilizado por getMyAvailability y getTherapistAvailability
 // -----------------------------------------------------------
 const fetchAvailability = async (therapistId) => {
-  const [availabilityResult, settingsResult] = await Promise.all([
+  const [availabilityRows, settingsRows] = await Promise.all([
     pool.query(
       `SELECT id, therapist_id, day_of_week, start_time, end_time,
               is_active, created_at, updated_at
        FROM therapist_availability
-       WHERE therapist_id = $1
+       WHERE therapist_id = ?
        ORDER BY day_of_week ASC`,
       [therapistId]
     ),
@@ -26,13 +26,17 @@ const fetchAvailability = async (therapistId) => {
       `SELECT cancellation_window_hours, refund_percentage_before_window,
               refund_percentage_after_window
        FROM therapist_settings
-       WHERE therapist_id = $1`,
+       WHERE therapist_id = ?`,
       [therapistId]
     ),
   ]);
 
-  const settings = settingsResult.rows.length > 0
-    ? settingsResult.rows[0]
+  // mysql2 devuelve [rows, fields]
+  const availability = availabilityRows[0].map(r => ({ ...r, is_active: !!r.is_active }));
+  const settingsResult = settingsRows[0];
+
+  const settings = settingsResult.length > 0
+    ? settingsResult[0]
     : {
         cancellation_window_hours: 24,
         refund_percentage_before_window: 100,
@@ -40,7 +44,7 @@ const fetchAvailability = async (therapistId) => {
       };
 
   return {
-    availability: availabilityResult.rows,
+    availability,
     settings,
   };
 };
@@ -96,23 +100,23 @@ const updateMyAvailability = async (req, res) => {
     }
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // 1. Eliminar disponibilidad actual
-    await client.query(
-      'DELETE FROM therapist_availability WHERE therapist_id = $1',
+    await conn.query(
+      'DELETE FROM therapist_availability WHERE therapist_id = ?',
       [req.user.id]
     );
 
     // 2. Insertar los nuevos registros de disponibilidad
     for (const day of availability) {
-      await client.query(
+      await conn.query(
         `INSERT INTO therapist_availability
            (therapist_id, day_of_week, start_time, end_time, is_active)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES (?, ?, ?, ?, ?)`,
         [
           req.user.id,
           day.day_of_week,
@@ -129,25 +133,24 @@ const updateMyAvailability = async (req, res) => {
       const refundBefore = settings.refund_percentage_before_window ?? 100;
       const refundAfter = settings.refund_percentage_after_window ?? 0;
 
-      await client.query(
+      await conn.query(
         `INSERT INTO therapist_settings (
            therapist_id,
            cancellation_window_hours,
            refund_percentage_before_window,
            refund_percentage_after_window
          )
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (therapist_id)
-         DO UPDATE SET
-           cancellation_window_hours = $2,
-           refund_percentage_before_window = $3,
-           refund_percentage_after_window = $4,
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           cancellation_window_hours = VALUES(cancellation_window_hours),
+           refund_percentage_before_window = VALUES(refund_percentage_before_window),
+           refund_percentage_after_window = VALUES(refund_percentage_after_window),
            updated_at = NOW()`,
         [req.user.id, cancellationWindow, refundBefore, refundAfter]
       );
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Retornar la disponibilidad actualizada
     const data = await fetchAvailability(req.user.id);
@@ -157,13 +160,13 @@ const updateMyAvailability = async (req, res) => {
       message: 'Disponibilidad actualizada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en updateMyAvailability:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -219,39 +222,39 @@ const getAvailableSlots = async (req, res) => {
     const dayOfWeek = parsedDate.getDay();
 
     // 2. Buscar el horario del terapeuta para ese día
-    const availabilityResult = await pool.query(
+    const [availabilityRows] = await pool.query(
       `SELECT start_time, end_time
        FROM therapist_availability
-       WHERE therapist_id = $1
-         AND day_of_week = $2
+       WHERE therapist_id = ?
+         AND day_of_week = ?
          AND is_active = true`,
       [therapist_id, dayOfWeek]
     );
 
     // 3. Si no trabaja ese día, retornar slots vacíos
-    if (availabilityResult.rows.length === 0) {
+    if (availabilityRows.length === 0) {
       return res.status(200).json({
         data: { slots: [] },
         message: 'El terapeuta no tiene disponibilidad para este día',
       });
     }
 
-    const { start_time, end_time } = availabilityResult.rows[0];
+    const { start_time, end_time } = availabilityRows[0];
 
     // 4. Obtener duración del servicio y su buffer_minutes
-    const serviceResult = await pool.query(
-      'SELECT duration_minutes, buffer_minutes FROM services WHERE id = $1 AND deleted_at IS NULL',
+    const [serviceRows] = await pool.query(
+      'SELECT duration_minutes, buffer_minutes FROM services WHERE id = ? AND deleted_at IS NULL',
       [service_id]
     );
 
-    if (serviceResult.rows.length === 0) {
+    if (serviceRows.length === 0) {
       return res.status(404).json({
         error: 'Servicio no encontrado',
       });
     }
 
-    const durationMinutes = serviceResult.rows[0].duration_minutes;
-    const bufferMinutes = serviceResult.rows[0].buffer_minutes ?? 15;
+    const durationMinutes = serviceRows[0].duration_minutes;
+    const bufferMinutes = serviceRows[0].buffer_minutes ?? 15;
 
     // 6. Generar todos los slots posibles
     const slots = [];
@@ -270,18 +273,18 @@ const getAvailableSlots = async (req, res) => {
     }
 
     // 7. Obtener reservas existentes del terapeuta en esa fecha
-    const reservationsResult = await pool.query(
+    const [reservationRows] = await pool.query(
       `SELECT scheduled_at
        FROM reservations
-       WHERE therapist_id = $1
-         AND DATE(scheduled_at) = $2
+       WHERE therapist_id = ?
+         AND DATE(scheduled_at) = ?
          AND status NOT IN ('cancelled')
          AND deleted_at IS NULL`,
       [therapist_id, date]
     );
 
     // 8. Filtrar slots que choquen con reservas existentes
-    const bookedTimes = reservationsResult.rows.map((row) => {
+    const bookedTimes = reservationRows.map((row) => {
       const d = new Date(row.scheduled_at);
       const h = d.getUTCHours().toString().padStart(2, '0');
       const m = d.getUTCMinutes().toString().padStart(2, '0');

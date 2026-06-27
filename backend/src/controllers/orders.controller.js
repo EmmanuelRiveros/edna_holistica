@@ -6,6 +6,7 @@
 // validación de stock y soporte de cupones.
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -23,33 +24,30 @@ const getAll = async (req, res) => {
     // WHERE dinámico
     const conditions = ['o.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     if (status) {
-      conditions.push(`o.status = $${paramIndex}`);
+      conditions.push(`o.status = ?`);
       values.push(status);
-      paramIndex++;
     }
 
     if (client_id) {
-      conditions.push(`o.client_id = $${paramIndex}`);
+      conditions.push(`o.client_id = ?`);
       values.push(client_id);
-      paramIndex++;
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM orders o WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM orders o WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros paginados
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT o.id, o.client_id, o.status, o.delivery_type,
-              o.total_amount::FLOAT AS total_amount,
+              o.total_amount,
               o.notes,
               o.created_at, o.updated_at,
               u.first_name AS client_first_name,
@@ -58,13 +56,13 @@ const getAll = async (req, res) => {
        LEFT JOIN users u ON u.id = o.client_id
        WHERE ${whereClause}
        ORDER BY o.created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
     return res.status(200).json({
       data: {
-        orders: dataResult.rows,
+        orders: dataRows,
         pagination: {
           total,
           page,
@@ -91,43 +89,43 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [orderResult, itemsResult] = await Promise.all([
+    const [[orderRows], [itemsRows]] = await Promise.all([
       pool.query(
         `SELECT o.id, o.client_id, o.status, o.delivery_type,
-                o.total_amount::FLOAT AS total_amount,
+                o.total_amount,
                 o.recipient_name, o.street, o.neighborhood, o.postal_code,
-                o.city, o.state, o.references, o.contact_phone, o.notes,
+                o.city, o.state, o.\`references\`, o.contact_phone, o.notes,
                 o.created_at, o.updated_at,
                 u.first_name AS client_first_name,
                 u.last_name AS client_last_name,
                 u.email AS client_email
          FROM orders o
          LEFT JOIN users u ON u.id = o.client_id
-         WHERE o.id = $1 AND o.deleted_at IS NULL`,
+         WHERE o.id = ? AND o.deleted_at IS NULL`,
         [id]
       ),
       pool.query(
         `SELECT oi.id, oi.product_id, oi.quantity,
-                oi.unit_price::FLOAT AS unit_price,
-                oi.subtotal::FLOAT AS subtotal,
+                oi.unit_price,
+                oi.subtotal,
                 oi.created_at,
                 p.name AS product_name,
                 p.image_urls AS product_image_urls
          FROM order_items oi
          LEFT JOIN products p ON p.id = oi.product_id
-         WHERE oi.order_id = $1
+         WHERE oi.order_id = ?
          ORDER BY oi.created_at ASC`,
         [id]
       ),
     ]);
 
-    if (orderResult.rows.length === 0) {
+    if (orderRows.length === 0) {
       return res.status(404).json({
         error: 'Orden no encontrada',
       });
     }
 
-    const order = orderResult.rows[0];
+    const order = orderRows[0];
 
     // Verificar permisos: admin o cliente dueño
     if (req.user.role !== 'admin' && req.user.id !== order.client_id) {
@@ -139,7 +137,7 @@ const getById = async (req, res) => {
     return res.status(200).json({
       data: {
         order,
-        items: itemsResult.rows,
+        items: itemsRows,
       },
       message: 'Orden obtenida exitosamente',
     });
@@ -187,10 +185,10 @@ const create = async (req, res) => {
     ? (req.body.client_id || req.user.id)
     : req.user.id;
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // 1. Validar cada producto y calcular subtotales
     let subtotal = 0;
@@ -198,38 +196,38 @@ const create = async (req, res) => {
 
     for (const item of items) {
       if (!item.product_id || !item.quantity || item.quantity < 1) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'Cada item debe tener product_id y quantity >= 1',
         });
       }
 
-      const productResult = await client.query(
-        `SELECT id, name, price::FLOAT AS price, stock, is_active
+      const [productRows] = await conn.query(
+        `SELECT id, name, price, stock, is_active
          FROM products
-         WHERE id = $1 AND deleted_at IS NULL
+         WHERE id = ? AND deleted_at IS NULL
          FOR UPDATE`,
         [item.product_id]
       );
 
-      if (productResult.rows.length === 0) {
-        await client.query('ROLLBACK');
+      if (productRows.length === 0) {
+        await conn.query('ROLLBACK');
         return res.status(404).json({
           error: `Producto ${item.product_id} no encontrado`,
         });
       }
 
-      const product = productResult.rows[0];
+      const product = { ...productRows[0], is_active: !!productRows[0].is_active };
 
       if (!product.is_active) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: `El producto "${product.name}" no está disponible`,
         });
       }
 
       if (product.stock < item.quantity) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${item.quantity}`,
         });
@@ -250,26 +248,26 @@ const create = async (req, res) => {
     let couponId = null;
 
     if (coupon_code) {
-      const couponResult = await client.query(
+      const [couponRows] = await conn.query(
         `SELECT id, discount_type, discount_value, min_purchase,
                 max_uses, used_count, expires_at
          FROM coupons
-         WHERE code = UPPER($1) AND is_active = TRUE`,
+         WHERE code = UPPER(?) AND is_active = TRUE`,
         [coupon_code]
       );
 
-      if (couponResult.rows.length === 0) {
-        await client.query('ROLLBACK');
+      if (couponRows.length === 0) {
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'Cupón no válido o inactivo',
         });
       }
 
-      const coupon = couponResult.rows[0];
+      const coupon = couponRows[0];
 
       // Verificar expiración
       if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'Este cupón ha expirado',
         });
@@ -277,7 +275,7 @@ const create = async (req, res) => {
 
       // Verificar usos máximos
       if (coupon.max_uses !== null && coupon.used_count >= coupon.max_uses) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'Este cupón ha alcanzado el límite de usos',
         });
@@ -285,7 +283,7 @@ const create = async (req, res) => {
 
       // Verificar compra mínima
       if (coupon.min_purchase !== null && subtotal < parseFloat(coupon.min_purchase)) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: `La compra mínima para este cupón es $${coupon.min_purchase}`,
         });
@@ -306,60 +304,68 @@ const create = async (req, res) => {
     const totalAmount = Math.max(subtotal - discount, 0);
 
     // 4. Insertar la orden
-    const orderResult = await client.query(
-      `INSERT INTO orders (client_id, status, delivery_type, total_amount,
+    const orderId = crypto.randomUUID();
+
+    await conn.query(
+      `INSERT INTO orders (id, client_id, status, delivery_type, total_amount,
                            recipient_name, street, neighborhood, postal_code,
-                           city, state, "references", contact_phone, notes)
-       VALUES ($1, 'pending', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING id, client_id, status, delivery_type,
-                 total_amount::FLOAT AS total_amount,
-                 recipient_name, street, neighborhood, postal_code,
-                 city, state, "references", contact_phone, notes, created_at, updated_at`,
+                           city, state, \`references\`, contact_phone, notes)
+       VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        clientId, delivery_type, totalAmount, 
+        orderId, clientId, delivery_type, totalAmount, 
         recipient_name || null, street || null, neighborhood || null, postal_code || null,
         city || null, state || null, references || null, contact_phone || null, notes || null
       ]
     );
 
-    const newOrder = orderResult.rows[0];
+    // Obtener la orden insertada
+    const [newOrderRows] = await conn.query(
+      `SELECT id, client_id, status, delivery_type,
+              total_amount,
+              recipient_name, street, neighborhood, postal_code,
+              city, state, \`references\`, contact_phone, notes, created_at, updated_at
+       FROM orders WHERE id = ?`,
+      [orderId]
+    );
+
+    const newOrder = newOrderRows[0];
 
     // 5. Insertar order_items y descontar stock
     for (const vi of validatedItems) {
-      await client.query(
+      await conn.query(
         `INSERT INTO order_items (order_id, product_id, quantity, unit_price)
-         VALUES ($1, $2, $3, $4)`,
+         VALUES (?, ?, ?, ?)`,
         [newOrder.id, vi.product_id, vi.quantity, vi.unit_price]
       );
 
       // 6. Descontar stock
-      await client.query(
-        `UPDATE products SET stock = stock - $1, updated_at = NOW()
-         WHERE id = $2`,
+      await conn.query(
+        `UPDATE products SET stock = stock - ?, updated_at = NOW()
+         WHERE id = ?`,
         [vi.quantity, vi.product_id]
       );
     }
 
     // 7. Incrementar used_count del cupón si se usó
     if (couponId) {
-      await client.query(
+      await conn.query(
         `UPDATE coupons SET used_count = used_count + 1, updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = ?`,
         [couponId]
       );
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     // Obtener los items insertados
-    const insertedItems = await pool.query(
+    const [insertedItems] = await pool.query(
       `SELECT oi.id, oi.product_id, oi.quantity,
-              oi.unit_price::FLOAT AS unit_price,
-              oi.subtotal::FLOAT AS subtotal,
+              oi.unit_price,
+              oi.subtotal,
               p.name AS product_name
        FROM order_items oi
        LEFT JOIN products p ON p.id = oi.product_id
-       WHERE oi.order_id = $1
+       WHERE oi.order_id = ?
        ORDER BY oi.created_at ASC`,
       [newOrder.id]
     );
@@ -367,19 +373,19 @@ const create = async (req, res) => {
     return res.status(201).json({
       data: {
         order: newOrder,
-        items: insertedItems.rows,
+        items: insertedItems,
         discount_applied: discount > 0 ? discount : undefined,
       },
       message: 'Orden creada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en create orders:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -400,29 +406,29 @@ const updateStatus = async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar que la orden existe
-    const orderResult = await client.query(
-      `SELECT id, status FROM orders WHERE id = $1 AND deleted_at IS NULL`,
+    const [orderRows] = await conn.query(
+      `SELECT id, status FROM orders WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (orderResult.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (orderRows.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({
         error: 'Orden no encontrada',
       });
     }
 
-    const currentStatus = orderResult.rows[0].status;
+    const currentStatus = orderRows[0].status;
 
     // No permitir cambiar una orden ya cancelada o entregada
     if (currentStatus === 'cancelled' || currentStatus === 'delivered') {
-      await client.query('ROLLBACK');
+      await conn.query('ROLLBACK');
       return res.status(400).json({
         error: `No se puede cambiar el status de una orden "${currentStatus}"`,
       });
@@ -430,46 +436,52 @@ const updateStatus = async (req, res) => {
 
     // Si se cancela, restaurar stock de cada item
     if (status === 'cancelled') {
-      const itemsResult = await client.query(
-        `SELECT product_id, quantity FROM order_items WHERE order_id = $1`,
+      const [itemsRows] = await conn.query(
+        `SELECT product_id, quantity FROM order_items WHERE order_id = ?`,
         [id]
       );
 
-      for (const item of itemsResult.rows) {
-        await client.query(
-          `UPDATE products SET stock = stock + $1, updated_at = NOW()
-           WHERE id = $2`,
+      for (const item of itemsRows) {
+        await conn.query(
+          `UPDATE products SET stock = stock + ?, updated_at = NOW()
+           WHERE id = ?`,
           [item.quantity, item.product_id]
         );
       }
     }
 
     // Actualizar status
-    const result = await client.query(
+    await conn.query(
       `UPDATE orders
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id, client_id, status, delivery_type,
-                 total_amount::FLOAT AS total_amount,
-                 recipient_name, street, neighborhood, postal_code,
-                 city, state, "references", contact_phone, notes, created_at, updated_at`,
+       SET status = ?, updated_at = NOW()
+       WHERE id = ? AND deleted_at IS NULL`,
       [status, id]
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
+
+    // Obtener la orden actualizada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, status, delivery_type,
+              total_amount,
+              recipient_name, street, neighborhood, postal_code,
+              city, state, \`references\`, contact_phone, notes, created_at, updated_at
+       FROM orders WHERE id = ?`,
+      [id]
+    );
 
     return res.status(200).json({
-      data: { order: result.rows[0] },
+      data: { order: rows[0] },
       message: 'Status de orden actualizado exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en updateStatus orders:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -485,30 +497,30 @@ const getMyOrders = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM orders
-       WHERE client_id = $1 AND deleted_at IS NULL`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM orders
+       WHERE client_id = ? AND deleted_at IS NULL`,
       [req.user.id]
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros paginados
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT id, client_id, status, delivery_type,
-              total_amount::FLOAT AS total_amount,
+              total_amount,
               recipient_name, street, neighborhood, postal_code,
-              city, state, "references", contact_phone, notes,
+              city, state, \`references\`, contact_phone, notes,
               created_at, updated_at
        FROM orders
-       WHERE client_id = $1 AND deleted_at IS NULL
+       WHERE client_id = ? AND deleted_at IS NULL
        ORDER BY created_at DESC
-       LIMIT $2 OFFSET $3`,
+       LIMIT ? OFFSET ?`,
       [req.user.id, limit, offset]
     );
 
     return res.status(200).json({
       data: {
-        orders: dataResult.rows,
+        orders: dataRows,
         pagination: {
           total,
           page,

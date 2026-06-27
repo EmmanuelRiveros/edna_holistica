@@ -19,11 +19,11 @@ const getCalendarEvents = async (req, res) => {
     const isTherapist = req.user.role === 'therapist';
     const params = isTherapist ? [req.user.id] : [];
 
-    const serviceFilter = isTherapist ? 'AND r.therapist_id = $1' : '';
-    const workshopReservationFilter = isTherapist ? 'AND r.therapist_id = $1' : '';
+    const serviceFilter = isTherapist ? 'AND r.therapist_id = ?' : '';
+    const workshopReservationFilter = isTherapist ? 'AND r.therapist_id = ?' : '';
     
     const emptyWorkshopJoin = isTherapist ? 'JOIN workshop_instructors wi ON wi.workshop_id = w.id' : '';
-    const emptyWorkshopFilter = isTherapist ? 'AND wi.instructor_id = $1' : '';
+    const emptyWorkshopFilter = isTherapist ? 'AND wi.instructor_id = ?' : '';
 
     const [serviceReservations, workshopReservations, emptyWorkshops] =
       await Promise.all([
@@ -40,7 +40,7 @@ const getCalendarEvents = async (req, res) => {
                   r.service_id,
                   s.name        AS service_name,
                   s.duration_minutes,
-                  s.price::FLOAT AS service_price
+                  s.price       AS service_price
            FROM reservations r
            JOIN users    c ON c.id = r.client_id
            JOIN services s ON s.id = r.service_id
@@ -66,7 +66,7 @@ const getCalendarEvents = async (req, res) => {
                   w.name        AS workshop_name,
                   w.starts_at   AS workshop_starts_at,
                   w.duration_minutes AS workshop_duration_minutes,
-                  w.price::FLOAT AS workshop_price
+                  w.price       AS workshop_price
            FROM reservations r
            JOIN users     c ON c.id = r.client_id
            JOIN workshops w ON w.id = r.workshop_id
@@ -81,8 +81,8 @@ const getCalendarEvents = async (req, res) => {
         // ── FUENTE 3: Talleres publicados sin inscripciones ──
         pool.query(
           `SELECT w.id, w.name, w.starts_at,
-                  w.starts_at + (COALESCE(w.duration_minutes, 120) || ' minutes')::interval AS ends_at,
-                  w.max_capacity, w.price::FLOAT AS price,
+                  DATE_ADD(w.starts_at, INTERVAL COALESCE(w.duration_minutes, 120) MINUTE) AS ends_at,
+                  w.max_capacity, w.price AS price,
                   w.status, w.type
            FROM workshops w
            LEFT JOIN reservations r
@@ -97,8 +97,13 @@ const getCalendarEvents = async (req, res) => {
         ),
       ]);
 
+    // mysql2 devuelve [rows, fields]
+    const serviceRows = serviceReservations[0];
+    const workshopRows = workshopReservations[0];
+    const emptyWorkshopRows = emptyWorkshops[0];
+
     // ── Mapear FUENTE 1 ──
-    const serviceEvents = serviceReservations.rows.map((r) => {
+    const serviceEvents = serviceRows.map((r) => {
       const start = new Date(r.scheduled_at);
       const durationMs = (r.duration_minutes || 60) * 60_000;
       return {
@@ -125,7 +130,7 @@ const getCalendarEvents = async (req, res) => {
     });
 
     // ── Mapear FUENTE 2 ──
-    const workshopReservationEvents = workshopReservations.rows.map((r) => {
+    const workshopReservationEvents = workshopRows.map((r) => {
       const start = new Date(r.scheduled_at);
       // Usa duration_minutes del taller, sino 120 min por defecto
       const durationMs = (r.workshop_duration_minutes || 120) * 60_000;
@@ -154,7 +159,7 @@ const getCalendarEvents = async (req, res) => {
     });
 
     // ── Mapear FUENTE 3 ──
-    const emptyWorkshopEvents = emptyWorkshops.rows.map((w) => ({
+    const emptyWorkshopEvents = emptyWorkshopRows.map((w) => ({
       id: w.id,
       type: 'workshop_event',
       entity: 'workshop',

@@ -5,6 +5,7 @@
 // Maneja las direcciones de envío del cliente autenticado.
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -13,19 +14,22 @@ const pool = require('../config/db');
 // -----------------------------------------------------------
 const getMyAddresses = async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, client_id, alias, recipient_name, street,
               neighborhood, postal_code, city, state,
-              "references", contact_phone, is_default,
+              \`references\`, contact_phone, is_default,
               created_at, updated_at
        FROM client_addresses
-       WHERE client_id = $1
+       WHERE client_id = ?
        ORDER BY is_default DESC, created_at DESC`,
       [req.user.id]
     );
 
+    // Mapear booleanos
+    const addresses = rows.map(r => ({ ...r, is_default: !!r.is_default }));
+
     return res.status(200).json({
-      data: { addresses: result.rows },
+      data: { addresses },
       message: 'Direcciones obtenidas exitosamente',
     });
   } catch (error) {
@@ -55,37 +59,36 @@ const create = async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar si es la primera dirección
-    const countResult = await client.query(
-      'SELECT COUNT(*)::INTEGER AS total FROM client_addresses WHERE client_id = $1',
+    const [countResult] = await conn.query(
+      'SELECT COUNT(*) AS total FROM client_addresses WHERE client_id = ?',
       [req.user.id]
     );
-    const isFirst = countResult.rows[0].total === 0;
+    const isFirst = countResult[0].total === 0;
     const shouldBeDefault = isFirst || is_default === true;
 
     // Si debe ser default, desmarcar las demás
     if (shouldBeDefault && !isFirst) {
-      await client.query(
-        'UPDATE client_addresses SET is_default = FALSE WHERE client_id = $1',
+      await conn.query(
+        'UPDATE client_addresses SET is_default = FALSE WHERE client_id = ?',
         [req.user.id]
       );
     }
 
-    const result = await client.query(
+    const id = crypto.randomUUID();
+
+    await conn.query(
       `INSERT INTO client_addresses
-         (client_id, alias, recipient_name, street, neighborhood,
-          postal_code, city, state, "references", contact_phone, is_default)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id, client_id, alias, recipient_name, street,
-                 neighborhood, postal_code, city, state,
-                 "references", contact_phone, is_default,
-                 created_at, updated_at`,
+         (id, client_id, alias, recipient_name, street, neighborhood,
+          postal_code, city, state, \`references\`, contact_phone, is_default)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        id,
         req.user.id,
         alias || null,
         recipient_name,
@@ -100,20 +103,32 @@ const create = async (req, res) => {
       ]
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
+
+    // Obtener la fila insertada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, alias, recipient_name, street,
+              neighborhood, postal_code, city, state,
+              \`references\`, contact_phone, is_default,
+              created_at, updated_at
+       FROM client_addresses WHERE id = ?`,
+      [id]
+    );
+
+    const address = { ...rows[0], is_default: !!rows[0].is_default };
 
     return res.status(201).json({
-      data: { address: result.rows[0] },
+      data: { address },
       message: 'Dirección creada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en create addresses:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -132,15 +147,13 @@ const update = async (req, res) => {
   // Construir SET dinámico
   const setClauses = [];
   const values = [];
-  let paramIndex = 1;
 
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
-      // "references" es palabra reservada en SQL
-      const col = field === 'references' ? '"references"' : field;
-      setClauses.push(`${col} = $${paramIndex}`);
+      // "references" es palabra reservada en MySQL
+      const col = field === 'references' ? '`references`' : field;
+      setClauses.push(`${col} = ?`);
       values.push(req.body[field]);
-      paramIndex++;
     }
   }
 
@@ -152,32 +165,32 @@ const update = async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar ownership
-    const ownership = await client.query(
-      'SELECT id, client_id FROM client_addresses WHERE id = $1',
+    const [ownership] = await conn.query(
+      'SELECT id, client_id FROM client_addresses WHERE id = ?',
       [id]
     );
 
-    if (ownership.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (ownership.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({ error: 'Dirección no encontrada' });
     }
 
-    if (req.user.role !== 'admin' && ownership.rows[0].client_id !== req.user.id) {
-      await client.query('ROLLBACK');
+    if (req.user.role !== 'admin' && ownership[0].client_id !== req.user.id) {
+      await conn.query('ROLLBACK');
       return res.status(403).json({ error: 'No tienes permisos para modificar esta dirección' });
     }
 
     // Si quiere marcar como default
     if (wantsDefault) {
-      await client.query(
-        'UPDATE client_addresses SET is_default = FALSE WHERE client_id = $1',
-        [ownership.rows[0].client_id]
+      await conn.query(
+        'UPDATE client_addresses SET is_default = FALSE WHERE client_id = ?',
+        [ownership[0].client_id]
       );
       setClauses.push(`is_default = TRUE`);
     }
@@ -185,31 +198,39 @@ const update = async (req, res) => {
     setClauses.push('updated_at = NOW()');
     values.push(id);
 
-    const result = await client.query(
+    await conn.query(
       `UPDATE client_addresses
        SET ${setClauses.join(', ')}
-       WHERE id = $${paramIndex}
-       RETURNING id, client_id, alias, recipient_name, street,
-                 neighborhood, postal_code, city, state,
-                 "references", contact_phone, is_default,
-                 created_at, updated_at`,
+       WHERE id = ?`,
       values
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
+
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, alias, recipient_name, street,
+              neighborhood, postal_code, city, state,
+              \`references\`, contact_phone, is_default,
+              created_at, updated_at
+       FROM client_addresses WHERE id = ?`,
+      [id]
+    );
+
+    const address = { ...rows[0], is_default: !!rows[0].is_default };
 
     return res.status(200).json({
-      data: { address: result.rows[0] },
+      data: { address },
       message: 'Dirección actualizada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en update addresses:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -219,61 +240,69 @@ const update = async (req, res) => {
 // -----------------------------------------------------------
 const setDefault = async (req, res) => {
   const { id } = req.params;
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar ownership
-    const ownership = await client.query(
-      'SELECT id, client_id FROM client_addresses WHERE id = $1',
+    const [ownership] = await conn.query(
+      'SELECT id, client_id FROM client_addresses WHERE id = ?',
       [id]
     );
 
-    if (ownership.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (ownership.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({ error: 'Dirección no encontrada' });
     }
 
-    const ownerId = ownership.rows[0].client_id;
+    const ownerId = ownership[0].client_id;
 
     if (req.user.role !== 'admin' && ownerId !== req.user.id) {
-      await client.query('ROLLBACK');
+      await conn.query('ROLLBACK');
       return res.status(403).json({ error: 'No tienes permisos para modificar esta dirección' });
     }
 
     // 1. Desmarcar todas
-    await client.query(
-      'UPDATE client_addresses SET is_default = FALSE WHERE client_id = $1',
+    await conn.query(
+      'UPDATE client_addresses SET is_default = FALSE WHERE client_id = ?',
       [ownerId]
     );
 
     // 2. Marcar esta como default
-    const result = await client.query(
+    await conn.query(
       `UPDATE client_addresses
        SET is_default = TRUE, updated_at = NOW()
-       WHERE id = $1
-       RETURNING id, client_id, alias, recipient_name, street,
-                 neighborhood, postal_code, city, state,
-                 "references", contact_phone, is_default,
-                 created_at, updated_at`,
+       WHERE id = ?`,
       [id]
     );
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
+
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, alias, recipient_name, street,
+              neighborhood, postal_code, city, state,
+              \`references\`, contact_phone, is_default,
+              created_at, updated_at
+       FROM client_addresses WHERE id = ?`,
+      [id]
+    );
+
+    const address = { ...rows[0], is_default: !!rows[0].is_default };
 
     return res.status(200).json({
-      data: { address: result.rows[0] },
+      data: { address },
       message: 'Dirección predeterminada actualizada',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en setDefault addresses:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -283,61 +312,66 @@ const setDefault = async (req, res) => {
 // -----------------------------------------------------------
 const remove = async (req, res) => {
   const { id } = req.params;
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     // Verificar ownership
-    const ownership = await client.query(
-      'SELECT id, client_id, is_default FROM client_addresses WHERE id = $1',
+    const [ownership] = await conn.query(
+      'SELECT id, client_id, is_default FROM client_addresses WHERE id = ?',
       [id]
     );
 
-    if (ownership.rows.length === 0) {
-      await client.query('ROLLBACK');
+    if (ownership.length === 0) {
+      await conn.query('ROLLBACK');
       return res.status(404).json({ error: 'Dirección no encontrada' });
     }
 
-    const address = ownership.rows[0];
+    const address = ownership[0];
 
     if (req.user.role !== 'admin' && address.client_id !== req.user.id) {
-      await client.query('ROLLBACK');
+      await conn.query('ROLLBACK');
       return res.status(403).json({ error: 'No tienes permisos para eliminar esta dirección' });
     }
 
     // Eliminar
-    await client.query('DELETE FROM client_addresses WHERE id = $1', [id]);
+    await conn.query('DELETE FROM client_addresses WHERE id = ?', [id]);
 
     // Si era la default, promover la más reciente
     if (address.is_default) {
-      await client.query(
-        `UPDATE client_addresses
-         SET is_default = TRUE, updated_at = NOW()
-         WHERE id = (
-           SELECT id FROM client_addresses
-           WHERE client_id = $1
-           ORDER BY created_at DESC
-           LIMIT 1
-         )`,
+      const [candidates] = await conn.query(
+        `SELECT id FROM client_addresses
+         WHERE client_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
         [address.client_id]
       );
+
+      if (candidates.length > 0) {
+        await conn.query(
+          `UPDATE client_addresses
+           SET is_default = TRUE, updated_at = NOW()
+           WHERE id = ?`,
+          [candidates[0].id]
+        );
+      }
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     return res.status(200).json({
       data: { id },
       message: 'Dirección eliminada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en delete addresses:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 

@@ -5,6 +5,7 @@
 // Maneja reservas de servicios individuales y talleres grupales.
 // ============================================================
 
+const crypto = require('crypto');
 const pool = require('../config/db');
 
 // -----------------------------------------------------------
@@ -22,47 +23,41 @@ const getAll = async (req, res) => {
     // WHERE dinámico
     const conditions = ['r.deleted_at IS NULL'];
     const values = [];
-    let paramIndex = 1;
 
     if (status) {
-      conditions.push(`r.status = $${paramIndex}`);
+      conditions.push(`r.status = ?`);
       values.push(status);
-      paramIndex++;
     }
 
     // Si el usuario es cliente, forzar que solo vea sus propias reservas
     if (req.user.role === 'client') {
       // Ignorar cualquier client_id que venga en el query
       // y forzar el filtro con su propio ID
-      conditions.push(`r.client_id = $${paramIndex}`);
+      conditions.push(`r.client_id = ?`);
       values.push(req.user.id);
-      paramIndex++;
     } else if (req.user.role === 'therapist') {
-      conditions.push(`r.therapist_id = $${paramIndex}`);
+      conditions.push(`r.therapist_id = ?`);
       values.push(req.user.id);
-      paramIndex++;
       if (client_id) {
-        conditions.push(`r.client_id = $${paramIndex}`);
+        conditions.push(`r.client_id = ?`);
         values.push(client_id);
-        paramIndex++;
       }
     } else if (client_id) {
-      conditions.push(`r.client_id = $${paramIndex}`);
+      conditions.push(`r.client_id = ?`);
       values.push(client_id);
-      paramIndex++;
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Total
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM reservations r WHERE ${whereClause}`,
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) AS total FROM reservations r WHERE ${whereClause}`,
       values
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countResult[0].total;
 
     // Registros paginados con JOINs
-    const dataResult = await pool.query(
+    const [dataRows] = await pool.query(
       `SELECT r.id, r.scheduled_at, r.status, r.notes,
               r.created_at, r.updated_at,
               r.client_id, c.first_name AS client_first_name,
@@ -79,13 +74,13 @@ const getAll = async (req, res) => {
        LEFT JOIN workshops w ON w.id = r.workshop_id
        WHERE ${whereClause}
        ORDER BY r.scheduled_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+       LIMIT ? OFFSET ?`,
       [...values, limit, offset]
     );
 
     return res.status(200).json({
       data: {
-        reservations: dataResult.rows,
+        reservations: dataRows,
         pagination: {
           total,
           page,
@@ -112,7 +107,7 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT r.id, r.scheduled_at, r.status, r.notes,
               r.created_at, r.updated_at,
               r.client_id, c.first_name AS client_first_name,
@@ -121,25 +116,25 @@ const getById = async (req, res) => {
               r.therapist_id, t.first_name AS therapist_first_name,
               t.last_name AS therapist_last_name, t.email AS therapist_email,
               r.service_id, s.name AS service_name,
-              s.duration_minutes, s.base_price::FLOAT AS service_price,
+              s.duration_minutes, s.base_price AS service_price,
               r.workshop_id, w.name AS workshop_name,
-              w.price::FLOAT AS workshop_price
+              w.price AS workshop_price
        FROM reservations r
        LEFT JOIN users c ON c.id = r.client_id
        LEFT JOIN users t ON t.id = r.therapist_id
        LEFT JOIN services s ON s.id = r.service_id
        LEFT JOIN workshops w ON w.id = r.workshop_id
-       WHERE r.id = $1 AND r.deleted_at IS NULL`,
+       WHERE r.id = ? AND r.deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
 
-    const reservation = result.rows[0];
+    const reservation = rows[0];
 
     // Verificar permisos: admin, therapist, o el cliente dueño
     if (
@@ -170,7 +165,7 @@ const getById = async (req, res) => {
 // UPDATE para verificar cupos en talleres.
 // -----------------------------------------------------------
 const create = async (req, res) => {
-  const { 
+  const {
     scheduled_at, service_id, workshop_id, therapist_id,
     payment_method,  // 'cash' | 'transfer' | 'paypal' | 'mercadopago'
     payment_type,    // 'full' | 'deposit'
@@ -193,10 +188,10 @@ const create = async (req, res) => {
   // El client_id depende del rol
   const clientId = req.user.role === 'admin' ? (req.body.client_id || req.user.id) : req.user.id;
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
 
   try {
-    await client.query('BEGIN');
+    await conn.query('START TRANSACTION');
 
     let totalAmount = 0;
     let depositAmount = 0;
@@ -204,33 +199,33 @@ const create = async (req, res) => {
     // Si es taller, verificar cupos con bloqueo de fila
     if (workshop_id) {
       // Bloquear la fila del taller (FOR UPDATE)
-      const workshopResult = await client.query(
-        'SELECT max_capacity, price::FLOAT, deposit_amount::FLOAT FROM workshops WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+      const [workshopRows] = await conn.query(
+        'SELECT max_capacity, price, deposit_amount FROM workshops WHERE id = ? AND deleted_at IS NULL FOR UPDATE',
         [workshop_id]
       );
 
-      if (workshopResult.rows.length === 0) {
-        await client.query('ROLLBACK');
+      if (workshopRows.length === 0) {
+        await conn.query('ROLLBACK');
         return res.status(404).json({
           error: 'Taller no encontrado',
         });
       }
 
-      const maxCapacity = workshopResult.rows[0].max_capacity;
-      totalAmount = parseFloat(workshopResult.rows[0].price || 0);
-      depositAmount = parseFloat(workshopResult.rows[0].deposit_amount || 0);
+      const maxCapacity = workshopRows[0].max_capacity;
+      totalAmount = parseFloat(workshopRows[0].price || 0);
+      depositAmount = parseFloat(workshopRows[0].deposit_amount || 0);
 
       // Contar reservas activas del taller
-      const activeCount = await client.query(
-        `SELECT COUNT(*) FROM reservations
-         WHERE workshop_id = $1 AND status != 'cancelled' AND deleted_at IS NULL`,
+      const [activeCount] = await conn.query(
+        `SELECT COUNT(*) AS total FROM reservations
+         WHERE workshop_id = ? AND status != 'cancelled' AND deleted_at IS NULL`,
         [workshop_id]
       );
 
-      const activeReservations = parseInt(activeCount.rows[0].count, 10);
+      const activeReservations = activeCount[0].total;
 
       if (activeReservations >= maxCapacity) {
-        await client.query('ROLLBACK');
+        await conn.query('ROLLBACK');
         return res.status(400).json({
           error: 'El taller no tiene cupos disponibles',
         });
@@ -238,18 +233,18 @@ const create = async (req, res) => {
     }
 
     if (service_id) {
-      const serviceResult = await client.query(
-        'SELECT price::FLOAT, deposit_amount::FLOAT FROM services WHERE id = $1 AND deleted_at IS NULL',
+      const [serviceRows] = await conn.query(
+        'SELECT price, deposit_amount FROM services WHERE id = ? AND deleted_at IS NULL',
         [service_id]
       );
-      if (serviceResult.rows.length === 0) {
-        await client.query('ROLLBACK');
+      if (serviceRows.length === 0) {
+        await conn.query('ROLLBACK');
         return res.status(404).json({
           error: 'Servicio no encontrado',
         });
       }
-      totalAmount = parseFloat(serviceResult.rows[0].price || 0);
-      depositAmount = parseFloat(serviceResult.rows[0].deposit_amount || 0);
+      totalAmount = parseFloat(serviceRows[0].price || 0);
+      depositAmount = parseFloat(serviceRows[0].deposit_amount || 0);
     }
 
     // Calcular monto a pagar según payment_type
@@ -265,13 +260,23 @@ const create = async (req, res) => {
     }
 
     // Insertar la reserva
-    const insertResult = await client.query(
-      `INSERT INTO reservations (client_id, therapist_id, service_id, workshop_id, scheduled_at, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, client_id, therapist_id, service_id, workshop_id,
-                 scheduled_at, status, notes, created_at, updated_at`,
-      [clientId, therapist_id || null, service_id || null, workshop_id || null, scheduled_at, reservationNotes || null]
+    const reservationId = crypto.randomUUID();
+
+    await conn.query(
+      `INSERT INTO reservations (id, client_id, therapist_id, service_id, workshop_id, scheduled_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [reservationId, clientId, therapist_id || null, service_id || null, workshop_id || null, scheduled_at, reservationNotes || null]
     );
+
+    // Obtener la fila insertada
+    const [insertedRows] = await conn.query(
+      `SELECT id, client_id, therapist_id, service_id, workshop_id,
+              scheduled_at, status, notes, created_at, updated_at
+       FROM reservations WHERE id = ?`,
+      [reservationId]
+    );
+
+    const newReservation = insertedRows[0];
 
     // Si se especificó un método de pago, registrar en payments
     if (payment_method) {
@@ -279,13 +284,13 @@ const create = async (req, res) => {
       const paymentStatus = isOffline ? 'pending' : 'completed';
       const paidVal = isOffline ? 0 : totalAmount;
 
-      await client.query(
+      await conn.query(
         `INSERT INTO payments 
          (reservation_id, payment_method, status, 
           total_amount, paid_amount)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES (?, ?, ?, ?, ?)`,
         [
-          insertResult.rows[0].id,
+          newReservation.id,
           payment_method,
           paymentStatus,
           totalAmount,  // Siempre guardar el precio completo
@@ -294,35 +299,35 @@ const create = async (req, res) => {
       );
     }
 
-    await client.query('COMMIT');
+    await conn.query('COMMIT');
 
     const emailService = require('../services/email.service');
     // No await — no bloquear la respuesta
-    emailService.sendNotification({ type: 'confirmation', data: insertResult.rows[0].id })
+    emailService.sendNotification({ type: 'confirmation', data: newReservation.id })
       .catch(err => console.error('Email error:', err));
 
     return res.status(201).json({
-      data: { 
-        reservation: insertResult.rows[0],
+      data: {
+        reservation: newReservation,
         payment: payment_method
-          ? { 
-              method: payment_method, 
-              status: payment_method === 'cash' || payment_method === 'transfer' ? 'pending' : 'completed',
-              total_amount: totalAmount,
-              amount_due: payment_method === 'cash' || payment_method === 'transfer' ? amountToPay : 0
-            }
+          ? {
+            method: payment_method,
+            status: payment_method === 'cash' || payment_method === 'transfer' ? 'pending' : 'completed',
+            total_amount: totalAmount,
+            amount_due: payment_method === 'cash' || payment_method === 'transfer' ? amountToPay : 0
+          }
           : null
       },
       message: 'Reserva creada exitosamente',
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await conn.query('ROLLBACK');
     console.error('❌ Error en create reservations:', error.message);
     return res.status(500).json({
       error: 'Error interno del servidor',
     });
   } finally {
-    client.release();
+    conn.release();
   }
 };
 
@@ -345,13 +350,13 @@ const updateStatus = async (req, res) => {
 
     // Validación de política de cancelación (24 horas) exclusiva para clientes
     if (req.user.role === 'client' && status === 'cancelled') {
-      const currentRes = await pool.query(
-        'SELECT scheduled_at FROM reservations WHERE id = $1',
+      const [currentRes] = await pool.query(
+        'SELECT scheduled_at FROM reservations WHERE id = ?',
         [id]
       );
 
-      if (currentRes.rows.length > 0) {
-        const scheduledAt = currentRes.rows[0].scheduled_at;
+      if (currentRes.length > 0) {
+        const scheduledAt = currentRes[0].scheduled_at;
         const hoursUntilAppointment = (new Date(scheduledAt) - new Date()) / (1000 * 60 * 60);
 
         if (hoursUntilAppointment < 24) {
@@ -364,20 +369,20 @@ const updateStatus = async (req, res) => {
 
     if (payment_method) {
       // Obtener el precio y depósito de la reserva
-      const resDataResult = await pool.query(
+      const [resDataResult] = await pool.query(
         `SELECT r.id, r.notes,
-                COALESCE(s.price, w.price, 0)::FLOAT AS price,
-                COALESCE(s.deposit_amount, w.deposit_amount, 0)::FLOAT AS deposit_amount
+                COALESCE(s.price, w.price, 0) AS price,
+                COALESCE(s.deposit_amount, w.deposit_amount, 0) AS deposit_amount
          FROM reservations r
          LEFT JOIN services s ON s.id = r.service_id
          LEFT JOIN workshops w ON w.id = r.workshop_id
-         WHERE r.id = $1 AND r.deleted_at IS NULL`,
+         WHERE r.id = ? AND r.deleted_at IS NULL`,
         [id]
       );
-      
-      if (resDataResult.rows.length > 0) {
-        const totalAmount = resDataResult.rows[0].price;
-        const depositAmount = resDataResult.rows[0].deposit_amount;
+
+      if (resDataResult.length > 0) {
+        const totalAmount = resDataResult[0].price;
+        const depositAmount = resDataResult[0].deposit_amount;
         const amountToPay = payment_type === 'deposit' && depositAmount > 0
           ? depositAmount
           : totalAmount;
@@ -387,7 +392,7 @@ const updateStatus = async (req, res) => {
         const paidVal = isOffline ? 0 : amountToPay;
 
         // Actualizar notas de la reserva
-        const currentNotes = resDataResult.rows[0].notes || '';
+        const currentNotes = resDataResult[0].notes || '';
         const payNotes = `Método de pago seleccionado: ${payment_method === 'cash' ? 'Efectivo' : payment_method === 'transfer' ? 'Transferencia' : payment_method}. Tipo: ${payment_type === 'deposit' ? 'Anticipo' : 'Pago Completo'}.`;
         const updatedNotes = currentNotes ? `${currentNotes} | ${payNotes}` : payNotes;
 
@@ -397,60 +402,63 @@ const updateStatus = async (req, res) => {
         }
 
         // Crear o actualizar en payments
-        const paymentCheck = await pool.query(
-          'SELECT id FROM payments WHERE reservation_id = $1 AND deleted_at IS NULL',
+        const [paymentCheck] = await pool.query(
+          'SELECT id FROM payments WHERE reservation_id = ? AND deleted_at IS NULL',
           [id]
         );
 
-        if (paymentCheck.rows.length > 0) {
+        if (paymentCheck.length > 0) {
           await pool.query(
             `UPDATE payments 
-             SET payment_method = $1, status = $2, total_amount = $3, paid_amount = $4, updated_at = NOW()
-             WHERE reservation_id = $5`,
+             SET payment_method = ?, status = ?, total_amount = ?, paid_amount = ?, updated_at = NOW()
+             WHERE reservation_id = ?`,
             [payment_method, paymentStatus, totalAmount, paidVal, id]
           );
         } else {
           await pool.query(
             `INSERT INTO payments (reservation_id, payment_method, status, total_amount, paid_amount)
-             VALUES ($1, $2, $3, $4, $5)`,
+             VALUES (?, ?, ?, ?, ?)`,
             [id, payment_method, paymentStatus, totalAmount, paidVal]
           );
         }
       }
     }
 
-    const setClauses = ['status = $1', 'updated_at = NOW()'];
+    const setClauses = ['status = ?', 'updated_at = NOW()'];
     const values = [status];
-    let paramIndex = 2;
 
     if (cancellation_reason !== undefined) {
-      setClauses.push(`cancellation_reason = $${paramIndex}`);
+      setClauses.push(`cancellation_reason = ?`);
       values.push(cancellation_reason);
-      paramIndex++;
     }
 
     if (notes !== undefined) {
-      setClauses.push(`notes = $${paramIndex}`);
+      setClauses.push(`notes = ?`);
       values.push(notes);
-      paramIndex++;
     }
 
     values.push(id);
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE reservations
        SET ${setClauses.join(', ')}
-       WHERE id = $${paramIndex} AND deleted_at IS NULL
-       RETURNING id, client_id, therapist_id, service_id, workshop_id,
-                 scheduled_at, status, cancellation_reason, notes, created_at, updated_at`,
+       WHERE id = ? AND deleted_at IS NULL`,
       values
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
+
+    // Obtener la fila actualizada
+    const [updatedRows] = await pool.query(
+      `SELECT id, client_id, therapist_id, service_id, workshop_id,
+              scheduled_at, status, cancellation_reason, notes, created_at, updated_at
+       FROM reservations WHERE id = ?`,
+      [id]
+    );
 
     const emailService = require('../services/email.service');
 
@@ -469,7 +477,7 @@ const updateStatus = async (req, res) => {
 
     // 🟢 Al estar aislado el correo, esto se ejecutará SIEMPRE, regresando un 200 a tu frontend
     return res.status(200).json({
-      data: { reservation: result.rows[0] },
+      data: { reservation: updatedRows[0] },
       message: 'Status de reserva actualizado exitosamente',
     });
 
@@ -496,23 +504,29 @@ const addNotes = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE reservations
-       SET notes = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id, client_id, therapist_id, service_id, workshop_id,
-                 scheduled_at, status, notes, created_at, updated_at`,
+       SET notes = ?, updated_at = NOW()
+       WHERE id = ? AND deleted_at IS NULL`,
       [notes, id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
 
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, therapist_id, service_id, workshop_id,
+              scheduled_at, status, notes, created_at, updated_at
+       FROM reservations WHERE id = ?`,
+      [id]
+    );
+
     return res.status(200).json({
-      data: { reservation: result.rows[0] },
+      data: { reservation: rows[0] },
       message: 'Notas actualizadas exitosamente',
     });
   } catch (error) {
@@ -531,22 +545,21 @@ const remove = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `UPDATE reservations
        SET deleted_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
 
     return res.status(200).json({
-      data: { id: result.rows[0].id },
+      data: { id },
       message: 'Reserva eliminada exitosamente',
     });
   } catch (error) {
@@ -562,6 +575,14 @@ const remove = async (req, res) => {
 // Reprograma una reserva actualizando scheduled_at.
 // Solo admin / therapist.
 // -----------------------------------------------------------
+
+// -----------------------------------------------------------
+// Helper: convierte un objeto Date a formato DATETIME de MySQL
+// 'YYYY-MM-DD HH:MM:SS', siempre en UTC (igual que hacía Postgres
+// con timestamptz). Colócalo arriba del archivo, junto al require.
+// -----------------------------------------------------------
+const toMySQLDatetime = (date) => date.toISOString().slice(0, 19).replace('T', ' ');
+
 const reschedule = async (req, res) => {
   try {
     const { id } = req.params;
@@ -583,19 +604,19 @@ const reschedule = async (req, res) => {
     }
 
     // Buscar la reserva y verificar que exista
-    const current = await pool.query(
-      `SELECT id, status FROM reservations WHERE id = $1 AND deleted_at IS NULL`,
+    const [current] = await pool.query(
+      `SELECT id, status FROM reservations WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 
-    if (current.rows.length === 0) {
+    if (current.length === 0) {
       return res.status(404).json({
         error: 'Reserva no encontrada',
       });
     }
 
     // Validar que no esté cancelada ni completada
-    const { status } = current.rows[0];
+    const { status } = current[0];
     if (status === 'cancelled' || status === 'completed') {
       return res.status(400).json({
         error: `No se puede reprogramar una reserva con status "${status}"`,
@@ -603,17 +624,23 @@ const reschedule = async (req, res) => {
     }
 
     // Actualizar scheduled_at
-    const result = await pool.query(
+    await pool.query(
       `UPDATE reservations
-       SET scheduled_at = $1, updated_at = NOW()
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id, client_id, therapist_id, service_id, workshop_id,
-                 scheduled_at, status, notes, created_at, updated_at`,
-      [parsedDate.toISOString(), id]
+       SET scheduled_at = ?, updated_at = NOW()
+       WHERE id = ? AND deleted_at IS NULL`,
+      [toMySQLDatetime(parsedDate), id]
+    );
+
+    // Obtener la fila actualizada
+    const [rows] = await pool.query(
+      `SELECT id, client_id, therapist_id, service_id, workshop_id,
+              scheduled_at, status, notes, created_at, updated_at
+       FROM reservations WHERE id = ?`,
+      [id]
     );
 
     return res.status(200).json({
-      data: { reservation: result.rows[0] },
+      data: { reservation: rows[0] },
       message: 'Reserva reprogramada exitosamente',
     });
   } catch (error) {

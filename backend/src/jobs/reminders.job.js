@@ -14,11 +14,11 @@ const startReminderJob = () => {
 
     try {
       // Reservas en ~24 horas
-      const reservations24h = await pool.query(
+      const [reservations24h] = await pool.query(
         `SELECT id FROM reservations
          WHERE status = 'confirmed'
            AND deleted_at IS NULL
-           AND scheduled_at BETWEEN $1 AND $2
+           AND scheduled_at BETWEEN ? AND ?
            AND reminder_24h_sent = FALSE`,
         [
           new Date(in24h.getTime() - tolerance),
@@ -26,20 +26,20 @@ const startReminderJob = () => {
         ]
       );
 
-      for (const r of reservations24h.rows) {
+      for (const r of reservations24h) {
         await emailService.sendNotification({ type: 'reminder_24h', data: r.id });
         await pool.query(
-          'UPDATE reservations SET reminder_24h_sent = TRUE WHERE id = $1',
+          'UPDATE reservations SET reminder_24h_sent = TRUE WHERE id = ?',
           [r.id]
         );
       }
 
       // Reservas en ~2 horas
-      const reservations2h = await pool.query(
+      const [reservations2h] = await pool.query(
         `SELECT id FROM reservations
          WHERE status = 'confirmed'
            AND deleted_at IS NULL
-           AND scheduled_at BETWEEN $1 AND $2
+           AND scheduled_at BETWEEN ? AND ?
            AND reminder_2h_sent = FALSE`,
         [
           new Date(in2h.getTime() - tolerance),
@@ -47,10 +47,10 @@ const startReminderJob = () => {
         ]
       );
 
-      for (const r of reservations2h.rows) {
+      for (const r of reservations2h) {
         await emailService.sendNotification({ type: 'reminder_2h', data: r.id });
         await pool.query(
-          'UPDATE reservations SET reminder_2h_sent = TRUE WHERE id = $1',
+          'UPDATE reservations SET reminder_2h_sent = TRUE WHERE id = ?',
           [r.id]
         );
       }
